@@ -1,6 +1,14 @@
 import os
 import sys
 import webbrowser
+
+def get_resource_path(relative_path):
+    """获取资源文件路径，兼容打包后"""
+    if getattr(sys, 'frozen', False):
+        base = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, relative_path)
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QStackedWidget, QLineEdit,
                              QFrame, QGridLayout, QComboBox, QTextEdit,
@@ -45,7 +53,7 @@ class MainWindow(QMainWindow):
         logo_label.setFixedSize(36, 36)
         logo_label.setScaledContents(True)
 
-        icon_path = os.path.join("assets", "NekroAgent.png")
+        icon_path = get_resource_path(os.path.join("assets", "NekroAgent.png"))
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
             logo_label.setPixmap(QPixmap(icon_path))
@@ -91,7 +99,7 @@ class MainWindow(QMainWindow):
 
         # 系统托盘
         self.tray_icon = QSystemTrayIcon(self)
-        icon_path = os.path.join("assets", "NekroAgent.png")
+        icon_path = get_resource_path(os.path.join("assets", "NekroAgent.png"))
         if os.path.exists(icon_path):
             self.tray_icon.setIcon(QIcon(icon_path))
         tray_menu = QMenu()
@@ -358,6 +366,14 @@ class MainWindow(QMainWindow):
         self.check_auto = QCheckBox("开机自动启动 Nekro-Agent 管理系统")
         self.check_auto.setChecked(self.config.get("autostart"))
         self.check_auto.stateChanged.connect(lambda s: self.config.set("autostart", s == 2))
+        check_icon = get_resource_path(os.path.join("assets", "check.png"))
+        self.check_auto.setStyleSheet(f"""
+            QCheckBox::indicator:checked {{
+                background-color: #0969da;
+                border-color: #0969da;
+                image: url({check_icon.replace(os.sep, '/')});
+            }}
+        """)
         layout.addWidget(self.check_auto)
 
         # 部署版本显示
@@ -367,6 +383,12 @@ class MainWindow(QMainWindow):
         self.mode_display = QLineEdit(mode_text)
         self.mode_display.setReadOnly(True)
         layout.addWidget(self.mode_display)
+
+        # WSL 安装目录
+        lbl_wsldir = QLabel("WSL 安装目录:"); layout.addWidget(lbl_wsldir)
+        self.wsldir_edit = QLineEdit(self.config.get("wsl_install_dir") or "未配置")
+        self.wsldir_edit.setReadOnly(True)
+        layout.addWidget(self.wsldir_edit)
 
         # 数据目录
         lbl_datadir = QLabel("数据目录 (WSL 内路径):"); layout.addWidget(lbl_datadir)
@@ -563,10 +585,13 @@ class MainWindow(QMainWindow):
 
     def _show_credentials_dialog(self, info):
         """弹窗显示部署凭据"""
+        print(f"[DEBUG] 凭据信息: {info}")
+        print(f"[DEBUG] deploy_mode: {info.get('deploy_mode')}")
+
         dlg = QDialog(self)
         dlg.setWindowTitle("部署凭据信息")
-        dlg.setFixedSize(480, 360)
-        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        dlg.setFixedSize(480, 400)
+        dlg.setModal(True)
 
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(30, 25, 30, 25)
@@ -576,51 +601,41 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 16px; font-weight: bold; color: #24292f;")
         layout.addWidget(title)
 
-        # 凭据内容
+        # NekroAgent 信息
         port = info.get("port", "8021")
-        content_layout = QVBoxLayout()
-
-        # 文本信息
-        lines = [
-            "=== 重要配置信息 ===",
-            f"管理员账号:  admin",
-            f"管理员密码:  {info.get('admin_password', '')}",
-            f"OneBot 令牌: {info.get('onebot_token', '')}",
-            "",
-            "=== 服务访问信息 ===",
-        ]
-
-        text_edit = QTextEdit()
-        text_edit.setPlainText("\n".join(lines))
-        text_edit.setReadOnly(True)
-        text_edit.setStyleSheet(
-            "QTextEdit { background: #f6f8fa; border: 1px solid #d0d7de; "
-            "border-radius: 6px; padding: 10px; font-family: Consolas, monospace; font-size: 13px; }"
+        na_info = QLabel(
+            f"<b style='color: #0969da;'>NekroAgent</b><br>"
+            f"<b>访问地址:</b> http://127.0.0.1:{port}<br>"
+            f"<b>管理员账号:</b> admin<br>"
+            f"<b>管理员密码:</b> {info.get('admin_password', '')}<br>"
+            f"<b>OneBot 令牌:</b> {info.get('onebot_token', '')}"
         )
-        text_edit.setMaximumHeight(120)
-        content_layout.addWidget(text_edit)
+        na_info.setStyleSheet(
+            "background: #f6f8fa; border: 1px solid #d0d7de; "
+            "border-radius: 6px; padding: 15px; font-size: 13px; color: #24292f;"
+        )
+        na_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        na_info.setWordWrap(True)
+        layout.addWidget(na_info)
 
-        # 可点击的链接
-        na_url = f"http://127.0.0.1:{port}"
-        na_link = QLabel(f'<a href="{na_url}">🌐 打开 NekroAgent: {na_url}</a>')
-        na_link.setOpenExternalLinks(True)
-        na_link.setStyleSheet("font-size: 13px; padding: 5px;")
-        content_layout.addWidget(na_link)
-
+        # NapCat 信息
         if info.get("deploy_mode") == "napcat":
             napcat_port = info.get('napcat_port', '6099')
             napcat_token = info.get("napcat_token", "")
-            napcat_url = f"http://127.0.0.1:{napcat_port}"
-            if napcat_token:
-                napcat_url += f"?token={napcat_token}"
-                napcat_link = QLabel(f'<a href="{napcat_url}">🤖 打开 NapCat: {napcat_url}</a>')
-            else:
-                napcat_link = QLabel(f'🤖 NapCat: {napcat_url} (等待 Token 捕获)')
-            napcat_link.setOpenExternalLinks(True)
-            napcat_link.setStyleSheet("font-size: 13px; padding: 5px;")
-            content_layout.addWidget(napcat_link)
+            token_text = napcat_token if napcat_token else "(等待捕获)"
 
-        layout.addLayout(content_layout)
+            napcat_info = QLabel(
+                f"<b style='color: #1f883d;'>NapCat</b><br>"
+                f"<b>访问地址:</b> http://127.0.0.1:{napcat_port}<br>"
+                f"<b>登录 Token:</b> {token_text}"
+            )
+            napcat_info.setStyleSheet(
+                "background: #f6fff8; border: 1px solid #d0d7de; "
+                "border-radius: 6px; padding: 15px; font-size: 13px; color: #24292f;"
+            )
+            napcat_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            napcat_info.setWordWrap(True)
+            layout.addWidget(napcat_info)
 
         # 按钮行
         btn_layout = QHBoxLayout()
@@ -630,8 +645,23 @@ class MainWindow(QMainWindow):
             "border-radius: 6px; padding: 8px 20px; font-size: 13px; }"
             "QPushButton:hover { background: #218838; }"
         )
+        copy_text = (
+            f"=== NekroAgent ===\n"
+            f"访问地址: http://127.0.0.1:{port}\n"
+            f"管理员账号: admin\n"
+            f"管理员密码: {info.get('admin_password', '')}\n"
+            f"OneBot 令牌: {info.get('onebot_token', '')}"
+        )
+        if info.get("deploy_mode") == "napcat":
+            napcat_port = info.get('napcat_port', '6099')
+            napcat_token = info.get("napcat_token", "") or "(等待捕获)"
+            copy_text += (
+                f"\n\n=== NapCat ===\n"
+                f"访问地址: http://127.0.0.1:{napcat_port}\n"
+                f"登录 Token: {napcat_token}"
+            )
         btn_copy.clicked.connect(lambda: (
-            QApplication.clipboard().setText("\n".join(lines)),
+            QApplication.clipboard().setText(copy_text),
             btn_copy.setText("已复制!"),
         ))
 

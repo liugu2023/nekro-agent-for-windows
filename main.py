@@ -68,8 +68,10 @@ def main():
     if sys.platform == 'win32':
         os.environ['PYTHONIOENCODING'] = 'utf-8'
 
-    # 设置日志文件
-    log_file = os.path.join(os.path.dirname(__file__), "debug.log")
+    # 设置日志文件（放到用户目录，避免权限问题）
+    log_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "NekroAgent")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "debug.log")
 
     # 重定向 stdout 和 stderr 到日志文件和控制台
     redirector = LogRedirector(log_file)

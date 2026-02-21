@@ -112,6 +112,5 @@ QCheckBox::indicator {
 QCheckBox::indicator:checked {
     background-color: #0969da;
     border-color: #0969da;
-    image: url(assets/check.png);
 }
 """

@@ -194,7 +194,9 @@ class FirstRunDialog(QDialog):
         if mode == "install_wsl":
             reply = QMessageBox.information(
                 self, "安装 WSL2",
-                "将以管理员权限安装 WSL2。\n安装完成后需要重启电脑，然后重新运行本程序。",
+                "将以管理员权限安装 WSL2。\n\n"
+                "注意：安装过程需要 5-10 分钟，请耐心等待。\n"
+                "安装完成后将自动重启电脑。",
                 QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
             )
             if reply == QMessageBox.StandardButton.Ok:

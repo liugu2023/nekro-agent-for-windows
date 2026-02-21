@@ -36,7 +36,8 @@ class WSLManager(QObject):
             self.base_path = os.path.abspath(base_path)
         else:
             if getattr(sys, 'frozen', False):
-                self.base_path = os.path.dirname(sys.executable)
+                # PyInstaller 打包后，数据文件在 _MEIPASS 或 exe 同级目录
+                self.base_path = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
             else:
                 self.base_path = os.path.dirname(os.path.abspath(__file__))
                 if self.base_path.endswith('core'):
@@ -248,11 +249,13 @@ class WSLManager(QObject):
     # ------------------------------------------------------------------ #
 
     def get_default_install_dir(self):
-        """返回默认的 WSL 安装目录"""
-        local_app = os.environ.get("LOCALAPPDATA", "")
-        if local_app:
-            return os.path.join(local_app, "NekroAgent", "wsl")
-        return os.path.join(self.base_path, "wsl_data")
+        """返回默认的 WSL 安装目录（优先非 C 盘）"""
+        # 尝试找非 C 盘的盘符
+        for drive in "DEFGH":
+            if os.path.exists(f"{drive}:"):
+                return f"{drive}:\\NekroAgent\\wsl"
+        # 没有其他盘符，使用用户目录
+        return os.path.join(os.path.expanduser("~"), "NekroAgent", "wsl")
 
     def create_distro(self, install_dir):
         """下载 Ubuntu rootfs 并用 wsl --import 创建专用发行版（同步，在线程中调用）"""
@@ -538,10 +541,11 @@ default = root
         try:
             import ctypes
             # --no-distribution: 仅启用 WSL 功能，不下载默认发行版（后续由程序自行导入）
+            # 添加 /norestart 参数，稍后由程序控制重启
             ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", "wsl", "--install --no-distribution", None, 1
+                None, "runas", "cmd", "/c wsl --install --no-distribution && shutdown /r /t 60 /c \"WSL 安装完成，60秒后自动重启\"", None, 1
             )
-            self.log_received.emit("WSL2 安装已启动，安装完成后请重启电脑", "info")
+            self.log_received.emit("WSL2 安装已启动，安装完成后将在 60 秒后自动重启", "info")
             return True
         except Exception as e:
             self.log_received.emit(f"WSL2 安装启动失败: {e}", "error")
@@ -674,11 +678,20 @@ default = root
 
                     # 拉取沙盒镜像
                     self.log_received.emit("拉取沙盒镜像...", "info")
-                    sandbox_proc = subprocess.run(
+                    sandbox_proc = subprocess.Popen(
                         ["wsl", "-d", distro, "--", "docker", "pull", "kromiose/nekro-agent-sandbox"],
-                        capture_output=True, timeout=300,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                         creationflags=self._creation_flags(),
                     )
+                    while True:
+                        line = sandbox_proc.stdout.readline()
+                        if not line and sandbox_proc.poll() is not None:
+                            break
+                        if line:
+                            text = self._safe_decode(line).strip()
+                            if text and not self._is_wsl_noise(text):
+                                self.log_received.emit(f"[沙盒镜像] {text}", "info")
+                    sandbox_proc.wait()
                     if sandbox_proc.returncode != 0:
                         self.log_received.emit("沙盒镜像拉取失败", "error")
                         self.status_changed.emit("启动失败")
