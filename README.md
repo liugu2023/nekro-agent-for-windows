@@ -26,7 +26,7 @@
 
 1. 下载最新的 Release 版本
 2. 解压到任意目录
-3. 运行 `NekroAgent.exe`
+3. 运行 `NekroAgent-Setup-v1.0.0-beta.exe`
 4. 按照首次运行向导完成配置
 
 ### 方式二：从源码运行
@@ -187,3 +187,4 @@ python main.py --debug
 
 - [Nekro-Agent](https://github.com/KroMiose/nekro-agent) - 核心服务
 - [NapCat](https://github.com/NapNeko/NapCatQQ) - QQ 机器人实现
+
