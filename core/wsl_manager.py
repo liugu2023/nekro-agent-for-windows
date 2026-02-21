@@ -1,0 +1,1085 @@
+import subprocess
+import threading
+import os
+import time
+import sys
+import secrets
+import string
+import tempfile
+import re
+from urllib.request import urlopen, Request
+from urllib.error import URLError
+from PyQt6.QtCore import QObject, pyqtSignal
+
+
+# 专用 WSL 发行版名称
+DISTRO_NAME = "NekroAgent"
+
+# Ubuntu 22.04 WSL rootfs 下载地址（按优先级排列）
+ROOTFS_URLS = [
+    "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cloud-images/wsl/jammy/current/ubuntu-jammy-wsl-amd64-ubuntu22.04lts.rootfs.tar.gz",
+    "https://mirror.sjtu.edu.cn/ubuntu-cloud-images/wsl/jammy/current/ubuntu-jammy-wsl-amd64-ubuntu22.04lts.rootfs.tar.gz",
+    "https://cloud-images.ubuntu.com/wsl/jammy/current/ubuntu-jammy-wsl-amd64-ubuntu22.04lts.rootfs.tar.gz",
+]
+
+
+class WSLManager(QObject):
+    log_received = pyqtSignal(str, str)    # (msg, level)
+    status_changed = pyqtSignal(str)       # 状态文本
+    boot_finished = pyqtSignal()           # 服务就绪
+    progress_updated = pyqtSignal(str)     # 安装进度文本
+    deploy_info_ready = pyqtSignal(dict)   # 部署凭据信息
+
+    def __init__(self, config=None, base_path=None):
+        super().__init__()
+        if base_path:
+            self.base_path = os.path.abspath(base_path)
+        else:
+            if getattr(sys, 'frozen', False):
+                self.base_path = os.path.dirname(sys.executable)
+            else:
+                self.base_path = os.path.dirname(os.path.abspath(__file__))
+                if self.base_path.endswith('core'):
+                    self.base_path = os.path.dirname(self.base_path)
+
+        self.config = config
+        self.is_running = False
+        self._log_process = None
+        self._stop_event = threading.Event()
+
+    # ------------------------------------------------------------------ #
+    #  日志辅助
+    # ------------------------------------------------------------------ #
+
+    def _safe_log(self, message, level="info"):
+        """安全地发送日志，处理编码问题"""
+        try:
+            # 确保字符串是正确的编码
+            if isinstance(message, bytes):
+                message = message.decode('utf-8', errors='replace')
+            else:
+                message = str(message)
+            # 替换可能导致问题的字符
+            message = message.replace('\x00', '')
+            self.log_received.emit(message, level)
+        except Exception as e:
+            try:
+                self.log_received.emit(f"[LOG ERROR] {str(e)}", "error")
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------ #
+    #  环境检测
+    # ------------------------------------------------------------------ #
+
+    def check_environment(self):
+        """检测 WSL2 / NekroAgent 发行版 / Docker / Compose 是否就绪"""
+        result = {
+            "wsl_installed": False,
+            "distro": "",
+            "docker_available": False,
+            "compose_available": False,
+        }
+
+        self.log_received.emit("[环境检测] 开始检测...", "info")
+
+        # 1. WSL 是否已安装
+        self.log_received.emit("[环境检测] 1/4 检测 WSL2...", "info")
+        try:
+            proc = subprocess.run(
+                ["wsl", "--status"],
+                capture_output=True, timeout=10,
+                creationflags=self._creation_flags(),
+            )
+            result["wsl_installed"] = (proc.returncode == 0)
+            if result["wsl_installed"]:
+                self.log_received.emit("[环境检测] ✓ WSL2 已安装", "info")
+            else:
+                self.log_received.emit("[环境检测] ✗ WSL2 未安装，返回码: " + str(proc.returncode), "error")
+                return result
+        except FileNotFoundError:
+            self.log_received.emit("[环境检测] ✗ wsl 命令未找到", "error")
+            return result
+        except Exception as e:
+            self.log_received.emit(f"[环境检测] ✗ WSL 检测异常: {e}", "error")
+            return result
+
+        # 2. NekroAgent 专用发行版是否存在
+        self.log_received.emit("[环境检测] 2/4 检测 NekroAgent 发行版...", "info")
+        if self._distro_exists():
+            result["distro"] = DISTRO_NAME
+            self.log_received.emit(f"[环境检测] ✓ {DISTRO_NAME} 发行版已存在", "info")
+        else:
+            self.log_received.emit("[环境检测] ✗ NekroAgent 发行版不存在", "error")
+            return result
+
+        # 3. Docker 是否可用
+        self.log_received.emit("[环境检测] 3/4 检测 Docker...", "info")
+        try:
+            proc = subprocess.run(
+                ["wsl", "-d", DISTRO_NAME, "--", "bash", "-c",
+                 "docker info"],
+                capture_output=True, timeout=30,
+                creationflags=self._creation_flags(),
+            )
+            result["docker_available"] = (proc.returncode == 0)
+
+            if not result["docker_available"]:
+                self.log_received.emit("[环境检测] ✗ Docker 检测失败", "error")
+                self.log_received.emit(f"返回码: {proc.returncode}", "debug")
+                self.log_received.emit(f"STDERR: {self._clean_stderr(proc.stderr, 300)}", "debug")
+            else:
+                self.log_received.emit("[环境检测] ✓ Docker 可用", "info")
+        except Exception as e:
+            self.log_received.emit(f"[环境检测] ✗ Docker 检测异常: {e}", "error")
+
+        # 4. Docker Compose 是否可用
+        self.log_received.emit("[环境检测] 4/4 检测 Docker Compose...", "info")
+        if result["docker_available"]:
+            try:
+                proc = subprocess.run(
+                    ["wsl", "-d", DISTRO_NAME, "--", "bash", "-c",
+                     "docker compose version"],
+                    capture_output=True, timeout=10,
+                    creationflags=self._creation_flags(),
+                )
+                result["compose_available"] = (proc.returncode == 0)
+
+                if not result["compose_available"]:
+                    self.log_received.emit("[环境检测] ✗ Docker Compose 检测失败", "error")
+                    self.log_received.emit(f"[DEBUG] 返回码: {proc.returncode}", "error")
+                    self.log_received.emit(f"[DEBUG] STDERR: {self._clean_stderr(proc.stderr, 300)}", "error")
+                else:
+                    self.log_received.emit("[环境检测] ✓ Docker Compose 可用", "info")
+            except Exception as e:
+                self.log_received.emit(f"[环境检测] ✗ Docker Compose 检测异常: {e}", "error")
+
+        # 汇总
+        all_ok = (result["wsl_installed"] and result["distro"] and
+                  result["docker_available"] and result["compose_available"])
+        if all_ok:
+            self.log_received.emit("[环境检测] ✓ 所有环境组件就绪！", "info")
+        else:
+            self.log_received.emit("[环境检测] ✗ 部分环境组件缺失", "error")
+
+        return result
+
+    def _distro_exists(self):
+        """检查 NekroAgent 专用发行版是否已存在"""
+        try:
+            proc = subprocess.run(
+                ["wsl", "-l", "-q"],
+                capture_output=True, timeout=10,
+                creationflags=self._creation_flags(),
+            )
+            if proc.returncode != 0:
+                self.log_received.emit(f"wsl -l 失败，返回码: {proc.returncode}", "debug")
+                return False
+
+            # 安全解码 wsl -l 输出
+            output = self._safe_decode(proc.stdout)
+            lines = [l.strip().strip('\x00') for l in output.splitlines()
+                     if l.strip().strip('\x00')]
+            self.log_received.emit(f"WSL 发行版列表: {lines}", "debug")
+            exists = DISTRO_NAME in lines
+            if exists:
+                self.log_received.emit(f"找到 {DISTRO_NAME} 发行版", "debug")
+            else:
+                self.log_received.emit(f"未找到 {DISTRO_NAME} 发行版", "debug")
+            return exists
+        except Exception as e:
+            self.log_received.emit(f"_distro_exists 异常: {e}", "debug")
+            return False
+
+    def _get_distro(self):
+        """返回当前使用的发行版名称"""
+        return DISTRO_NAME
+
+    def _safe_decode(self, data):
+        """安全解码字节数据，智能检测编码"""
+        if isinstance(data, str):
+            return data
+        if isinstance(data, bytes):
+            # 检测 UTF-16-LE：特征是奇数字节位置有大量 0x00
+            # wsl 命令输出通常是 UTF-16-LE
+            if len(data) >= 4:
+                # 统计 0x00 字节在奇数位置的比例
+                null_at_odd = sum(1 for i in range(1, len(data), 2) if data[i] == 0)
+                total_odd = (len(data) + 1) // 2
+                # 如果超过 70% 的奇数位置都是 0x00，很可能是 UTF-16-LE
+                if total_odd > 0 and null_at_odd / total_odd > 0.7:
+                    try:
+                        result = data.decode('utf-16-le')
+                        # 验证解码是否成功（没有太多乱字符）
+                        return result
+                    except Exception:
+                        pass
+
+            # 尝试其他编码，不使用 errors='ignore' 以便能正确检测失败
+            for encoding in ['utf-8', 'gbk', 'latin1']:
+                try:
+                    return data.decode(encoding)
+                except (UnicodeDecodeError, LookupError):
+                    continue
+
+            # 最后的降级方案
+            return data.decode('latin1', errors='replace')
+        return str(data)
+
+    def _is_wsl_noise(self, text):
+        """判断是否为 WSL 系统噪音（如 hostname 解析警告的 UTF-16 乱码）"""
+        if text.startswith("wsl:"):
+            return True
+        # 非 ASCII 字符占比超过 30% 则认为是乱码
+        non_ascii = sum(1 for c in text if ord(c) > 127)
+        if len(text) > 0 and non_ascii / len(text) > 0.3:
+            return True
+        return False
+
+    def _clean_stderr(self, data, max_len=500):
+        """解码并清理 stderr，过滤 WSL 噪音"""
+        text = self._safe_decode(data)
+        lines = [l for l in text.splitlines() if l.strip() and not self._is_wsl_noise(l)]
+        result = "\n".join(lines)
+        return result[:max_len] if max_len else result
+
+    # ------------------------------------------------------------------ #
+    #  专用发行版创建
+    # ------------------------------------------------------------------ #
+
+    def get_default_install_dir(self):
+        """返回默认的 WSL 安装目录"""
+        local_app = os.environ.get("LOCALAPPDATA", "")
+        if local_app:
+            return os.path.join(local_app, "NekroAgent", "wsl")
+        return os.path.join(self.base_path, "wsl_data")
+
+    def create_distro(self, install_dir):
+        """下载 Ubuntu rootfs 并用 wsl --import 创建专用发行版（同步，在线程中调用）"""
+        self.progress_updated.emit("准备创建 NekroAgent 运行环境...")
+        self.log_received.emit("[发行版创建] 开始创建 NekroAgent 专用发行版...", "info")
+
+        # 创建安装目录
+        self.log_received.emit(f"[发行版创建] 1/4 创建安装目录: {install_dir}", "info")
+        try:
+            os.makedirs(install_dir, exist_ok=True)
+            self.log_received.emit("[发行版创建] ✓ 安装目录已创建", "info")
+        except Exception as e:
+            self.log_received.emit(f"[发行版创建] ✗ 创建目录失败: {e}", "error")
+            return False
+
+        # 下载 rootfs
+        self.log_received.emit("[发行版创建] 2/4 下载 Ubuntu rootfs...", "info")
+        rootfs_path = os.path.join(install_dir, "rootfs.tar.gz")
+        if not self._download_rootfs(rootfs_path):
+            self.log_received.emit("[发行版创建] ✗ rootfs 下载失败", "error")
+            return False
+        self.log_received.emit("[发行版创建] ✓ rootfs 下载完成", "info")
+
+        # wsl --import
+        self.progress_updated.emit("正在导入 WSL 发行版...")
+        self.log_received.emit("[发行版创建] 3/4 导入 WSL 发行版...", "info")
+        try:
+            proc = subprocess.run(
+                ["wsl", "--import", DISTRO_NAME, install_dir, rootfs_path],
+                capture_output=True, timeout=300,
+                creationflags=self._creation_flags(),
+            )
+            if proc.returncode != 0:
+                self.progress_updated.emit(f"导入失败")
+                self.log_received.emit("[发行版创建] ✗ WSL 导入失败", "error")
+                self.log_received.emit(f"返回码: {proc.returncode}", "debug")
+                self.log_received.emit(f"STDERR: {self._clean_stderr(proc.stderr, 300)}", "debug")
+                return False
+            self.log_received.emit(f"[发行版创建] ✓ {DISTRO_NAME} 发行版导入完成", "info")
+        except subprocess.TimeoutExpired:
+            self.progress_updated.emit("导入超时")
+            self.log_received.emit("[发行版创建] ✗ 导入超时", "error")
+            return False
+        except Exception as e:
+            self.progress_updated.emit(f"导入异常: {e}")
+            self.log_received.emit(f"[发行版创建] ✗ 导入异常: {e}", "error")
+            return False
+
+        # 清理下载的 rootfs 文件
+        try:
+            os.remove(rootfs_path)
+            self.log_received.emit("[发行版创建] ✓ 临时 rootfs 文件已清理", "info")
+        except Exception:
+            pass
+
+        # 配置 WSL - 隔离 Windows 环境变量
+        self.progress_updated.emit("正在配置 WSL 环境...")
+        self.log_received.emit("[发行版创建] 4/4 配置 WSL 环境（隔离 Windows PATH）...", "info")
+        try:
+            wsl_conf_content = """[boot]
+systemd = true
+
+[interop]
+appendWindowsPath = false
+
+[user]
+default = root
+"""
+            self._write_to_wsl(DISTRO_NAME, wsl_conf_content, "/etc/wsl.conf")
+            self.log_received.emit("[发行版创建] ✓ WSL 配置完成", "info")
+
+            # 重启 WSL 发行版，使 systemd 配置生效
+            self.log_received.emit("[发行版创建] 重启 WSL 发行版以启用 systemd...", "info")
+            subprocess.run(
+                ["wsl", "--terminate", DISTRO_NAME],
+                capture_output=True, timeout=30,
+                creationflags=self._creation_flags(),
+            )
+            time.sleep(2)
+            self.log_received.emit("[发行版创建] ✓ WSL 发行版已重启", "info")
+        except Exception as e:
+            self.progress_updated.emit(f"配置 WSL 失败: {e}")
+            self.log_received.emit(f"[发行版创建] ✗ 配置 WSL 失败: {e}", "error")
+            return False
+
+        # 保存配置
+        if self.config:
+            self.config.set("wsl_distro", DISTRO_NAME)
+            self.config.set("wsl_install_dir", install_dir)
+            self.log_received.emit("[发行版创建] ✓ 配置已保存", "info")
+
+        self.progress_updated.emit("发行版创建成功！正在安装 Docker...")
+        self.log_received.emit("[发行版创建] ✓ 发行版创建完成！开始安装 Docker...", "info")
+
+        # 在新发行版内安装 Docker
+        return self._install_docker_sync()
+
+    def _download_rootfs(self, dest_path):
+        """下载 Ubuntu rootfs，返回是否成功"""
+        for url in ROOTFS_URLS:
+            try:
+                self.progress_updated.emit("正在下载 Ubuntu rootfs...")
+                req = Request(url, headers={"User-Agent": "NekroAgent/1.0"})
+                resp = urlopen(req, timeout=60)
+
+                total = resp.headers.get("Content-Length")
+                total = int(total) if total else None
+                downloaded = 0
+                chunk_size = 256 * 1024  # 256KB
+
+                with open(dest_path, "wb") as f:
+                    while True:
+                        chunk = resp.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            pct = int(downloaded * 100 / total)
+                            mb_done = downloaded / (1024 * 1024)
+                            mb_total = total / (1024 * 1024)
+                            self.progress_updated.emit(
+                                f"下载中... {mb_done:.1f} / {mb_total:.1f} MB ({pct}%)"
+                            )
+                        else:
+                            mb_done = downloaded / (1024 * 1024)
+                            self.progress_updated.emit(f"下载中... {mb_done:.1f} MB")
+
+                self.progress_updated.emit("下载完成")
+                return True
+
+            except Exception as e:
+                self.progress_updated.emit(f"下载失败: {e}，尝试下一个源...")
+                continue
+
+        self.progress_updated.emit("所有下载源均失败")
+        return False
+
+    def _install_docker_sync(self):
+        """在专用发行版内同步安装 Docker（通过 Docker 官方源，使用国内镜像）"""
+        distro = DISTRO_NAME
+        self.progress_updated.emit("正在安装 Docker...")
+        self.log_received.emit("[Docker 安装] 开始安装 Docker...", "info")
+
+        def _run_step(cmd, desc, timeout=300):
+            """执行一个安装步骤，返回是否成功"""
+            proc = subprocess.run(
+                ["wsl", "-d", distro, "--", "bash", "-c", cmd],
+                capture_output=True, timeout=timeout,
+                creationflags=self._creation_flags(),
+            )
+            if proc.returncode != 0:
+                self.log_received.emit(f"[Docker 安装] ✗ {desc}失败", "error")
+                self.log_received.emit(f"[DEBUG] 返回码: {proc.returncode}", "error")
+                self.log_received.emit(f"[DEBUG] STDERR: {self._clean_stderr(proc.stderr)}", "error")
+                return False
+            return True
+
+        # Docker 安装源（按优先级排列）
+        docker_mirrors = [
+            ("阿里云", "https://mirrors.aliyun.com/docker-ce"),
+            ("清华大学", "https://mirrors.tuna.tsinghua.edu.cn/docker-ce"),
+            ("官方源", "https://download.docker.com"),
+        ]
+
+        try:
+            # 1/5 安装前置依赖
+            self.progress_updated.emit("安装前置依赖...")
+            self.log_received.emit("[Docker 安装] 1/5 安装前置依赖...", "info")
+            if not _run_step(
+                "apt-get update && apt-get install -y ca-certificates curl gnupg lsb-release",
+                "前置依赖安装"
+            ):
+                return False
+            self.log_received.emit("[Docker 安装] ✓ 前置依赖安装完成", "info")
+
+            # 2/5 + 3/5 配置源并安装 Docker CE（多镜像源重试）
+            installed = False
+            for i, (mirror_name, docker_mirror) in enumerate(docker_mirrors):
+                self.progress_updated.emit(f"配置 Docker 源 ({mirror_name})...")
+                self.log_received.emit(
+                    f"[Docker 安装] 2/5 添加 Docker GPG 密钥和源（{mirror_name}）"
+                    f"{'  [重试]' if i > 0 else ''}...", "info"
+                )
+
+                # 清理旧的源配置和 apt 缓存
+                if i > 0:
+                    _run_step(
+                        "rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.gpg && apt-get clean",
+                        "清理旧源缓存"
+                    )
+
+                add_repo_cmd = (
+                    "mkdir -p /etc/apt/keyrings && "
+                    f"curl -fsSL {docker_mirror}/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && "
+                    "chmod a+r /etc/apt/keyrings/docker.gpg && "
+                    f'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] '
+                    f'{docker_mirror}/linux/ubuntu $(lsb_release -cs) stable" '
+                    "> /etc/apt/sources.list.d/docker.list"
+                )
+                if not _run_step(add_repo_cmd, "Docker 源配置"):
+                    self.log_received.emit(f"[Docker 安装] ⚠ {mirror_name} 源配置失败，尝试下一个源...", "warn")
+                    continue
+                self.log_received.emit(f"[Docker 安装] ✓ Docker 源配置完成（{mirror_name}）", "info")
+
+                self.progress_updated.emit(f"安装 Docker CE ({mirror_name})...")
+                self.log_received.emit("[Docker 安装] 3/5 安装 Docker CE + Compose 插件...", "info")
+                if _run_step(
+                    "apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
+                    "Docker CE 安装",
+                    timeout=600,
+                ):
+                    self.log_received.emit("[Docker 安装] ✓ Docker CE 安装完成", "info")
+                    installed = True
+                    break
+                else:
+                    self.log_received.emit(f"[Docker 安装] ⚠ {mirror_name} 安装失败，尝试下一个源...", "warn")
+
+            if not installed:
+                self.log_received.emit("[Docker 安装] ✗ 所有镜像源均失败", "error")
+                return False
+
+            # 4/5 配置 Docker 镜像加速器
+            self.progress_updated.emit("配置镜像加速器...")
+            self.log_received.emit("[Docker 安装] 4/5 配置 Docker 镜像加速器...", "info")
+            daemon_json = (
+                '{"registry-mirrors":['
+                '"https://docker.m.daocloud.io",'
+                '"https://docker.1ms.run",'
+                '"https://ccr.ccs.tencentyun.com"'
+                ']}'
+            )
+            if not _run_step(
+                f"mkdir -p /etc/docker && echo '{daemon_json}' > /etc/docker/daemon.json",
+                "镜像加速器配置"
+            ):
+                self.log_received.emit("[Docker 安装] ⚠ 镜像加速器配置失败，将使用默认源", "warn")
+            else:
+                self.log_received.emit("[Docker 安装] ✓ 镜像加速器配置完成", "info")
+
+            # 5/5 启动 Docker 服务（使用 systemctl，因为已启用 systemd）
+            self.progress_updated.emit("启动 Docker 服务...")
+            self.log_received.emit("[Docker 安装] 5/5 启动 Docker 服务...", "info")
+            _run_step("systemctl daemon-reload && systemctl restart docker", "Docker 服务启动", timeout=60)
+            self.log_received.emit("[Docker 安装] ✓ Docker 服务已启动", "info")
+
+            # 等待 Docker daemon 就绪
+            self.log_received.emit("[Docker 安装] 等待 Docker daemon 就绪...", "info")
+            time.sleep(2)
+
+            self.progress_updated.emit("Docker 安装完成！")
+            self.log_received.emit("[Docker 安装] ✓ Docker 安装完成！", "info")
+            return True
+
+        except subprocess.TimeoutExpired:
+            self.progress_updated.emit("Docker 安装超时")
+            self.log_received.emit("[Docker 安装] ✗ Docker 安装超时", "error")
+            return False
+        except Exception as e:
+            self.progress_updated.emit(f"Docker 安装异常: {e}")
+            self.log_received.emit(f"[Docker 安装] ✗ Docker 安装异常: {e}", "error")
+            return False
+
+    def remove_distro(self):
+        """删除专用 WSL 发行版"""
+        try:
+            subprocess.run(
+                ["wsl", "--unregister", DISTRO_NAME],
+                capture_output=True, timeout=30,
+                creationflags=self._creation_flags(),
+            )
+            self.log_received.emit(f"已删除 WSL 发行版 {DISTRO_NAME}", "info")
+        except Exception as e:
+            self.log_received.emit(f"删除发行版失败: {e}", "error")
+
+    # ------------------------------------------------------------------ #
+    #  安装 WSL2（系统级）
+    # ------------------------------------------------------------------ #
+
+    def install_wsl(self):
+        """以管理员权限安装 WSL2（通过 ShellExecute runas）"""
+        self.log_received.emit("正在请求管理员权限安装 WSL2...", "info")
+        try:
+            import ctypes
+            # --no-distribution: 仅启用 WSL 功能，不下载默认发行版（后续由程序自行导入）
+            ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", "wsl", "--install --no-distribution", None, 1
+            )
+            self.log_received.emit("WSL2 安装已启动，安装完成后请重启电脑", "info")
+            return True
+        except Exception as e:
+            self.log_received.emit(f"WSL2 安装启动失败: {e}", "error")
+            return False
+
+    def install_docker(self):
+        """在专用发行版内异步安装 Docker"""
+        if not self._distro_exists():
+            self.log_received.emit("NekroAgent 发行版不存在，请先创建环境", "error")
+            return False
+
+        self.log_received.emit(f"正在 {DISTRO_NAME} 中安装 Docker...", "info")
+        self.status_changed.emit("安装 Docker...")
+
+        def _do_install():
+            success = self._install_docker_sync()
+            if success:
+                self.log_received.emit("Docker 安装完成", "info")
+            else:
+                self.log_received.emit("Docker 安装失败", "error")
+            self.progress_updated.emit("__docker_done__" if success else "__docker_fail__")
+
+        threading.Thread(target=_do_install, daemon=True).start()
+        return True
+
+    # ------------------------------------------------------------------ #
+    #  服务部署
+    # ------------------------------------------------------------------ #
+
+    def start_services(self, deploy_mode):
+        """部署 Docker Compose 服务"""
+        if self.is_running:
+            return True
+
+        distro = DISTRO_NAME
+        if not self._distro_exists():
+            self.log_received.emit("NekroAgent 发行版不存在", "error")
+            return False
+
+        self._stop_event.clear()
+        self.status_changed.emit("启动中...")
+
+        # 选择 compose 文件
+        if deploy_mode == "napcat":
+            compose_file = "docker-compose_with_napcat.yml"
+        else:
+            compose_file = "docker-compose_withnot_napcat.yml"
+
+        compose_src = os.path.join(self.base_path, compose_file)
+        env_src = os.path.join(self.base_path, "env")
+
+        if not os.path.exists(compose_src):
+            self.log_received.emit(f"Compose 文件不存在: {compose_src}", "error")
+            return False
+
+        def _deploy():
+            try:
+                # 获取 WSL 内 home 目录
+                wsl_home = self._wsl_exec(distro, "echo $HOME").strip()
+                if not wsl_home:
+                    wsl_home = "/root"
+                deploy_dir = f"{wsl_home}/nekro_agent"
+
+                # 优先使用用户配置的数据目录
+                data_dir = None
+                if self.config:
+                    data_dir = self.config.get("data_dir")
+                if not data_dir:
+                    data_dir = f"{wsl_home}/nekro_agent_data"
+
+                # 在 WSL 内创建部署目录
+                self._wsl_exec(distro, f"mkdir -p {deploy_dir}")
+                self._wsl_exec(distro, f"mkdir -p {data_dir}")
+
+                # 检测是否为首次部署
+                env_exists = self._wsl_exec(distro, f"test -f {deploy_dir}/.env && echo yes").strip()
+
+                if env_exists == "yes":
+                    self.log_received.emit("检测到已有部署配置，复用现有配置", "info")
+                    env_content = self._wsl_exec(distro, f"cat {deploy_dir}/.env")
+                else:
+                    self.log_received.emit("首次部署，写入配置文件", "info")
+                    self._copy_to_wsl(distro, compose_src, f"{deploy_dir}/docker-compose.yml")
+                    env_content = self._prepare_env(env_src, data_dir)
+                    self._write_to_wsl(distro, env_content, f"{deploy_dir}/.env")
+
+                # 验证文件是否正确部署
+                ls_output = self._wsl_exec(distro, f"ls -la {deploy_dir}")
+                self.log_received.emit(f"部署目录内容:\n{ls_output}", "debug")
+
+                self.log_received.emit("配置文件已部署到 WSL", "info")
+
+                # 确保 Docker daemon 运行
+                self.log_received.emit("确保 Docker 服务启动...", "info")
+                self._wsl_exec(distro, "systemctl start docker", timeout=30)
+
+                # 检查 docker 命令是否可用
+                docker_version = self._wsl_exec(distro, "docker version")
+                self.log_received.emit(f"Docker 版本:\n{docker_version}", "debug")
+
+                # 检查 compose 命令是否可用
+                compose_version = self._wsl_exec(distro, "docker compose version")
+                self.log_received.emit(f"Docker Compose 版本: {compose_version}", "debug")
+
+                # 首次部署时拉取镜像，后续启动跳过
+                if env_exists != "yes":
+                    self.log_received.emit("拉取 Docker 镜像（可能需要较长时间）...", "info")
+                    self.progress_updated.emit("拉取 Docker 镜像...")
+                    pull_proc = subprocess.Popen(
+                        ["wsl", "-d", distro, "--", "bash", "-c",
+                         f"cd {deploy_dir} && docker compose -f docker-compose.yml --env-file .env pull 2>&1"],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        creationflags=self._creation_flags(),
+                    )
+                    while True:
+                        line = pull_proc.stdout.readline()
+                        if not line and pull_proc.poll() is not None:
+                            break
+                        if line:
+                            text = self._safe_decode(line).strip()
+                            # 过滤 WSL 系统警告（UTF-16 乱码）
+                            if text and not self._is_wsl_noise(text):
+                                self.log_received.emit(f"[镜像拉取] {text}", "info")
+                    pull_proc.wait()
+                    if pull_proc.returncode != 0:
+                        self.log_received.emit("镜像拉取失败", "error")
+                        self.status_changed.emit("启动失败")
+                        return
+                    self.log_received.emit("✓ 镜像拉取完成", "info")
+
+                    # 拉取沙盒镜像
+                    self.log_received.emit("拉取沙盒镜像...", "info")
+                    sandbox_proc = subprocess.run(
+                        ["wsl", "-d", distro, "--", "docker", "pull", "kromiose/nekro-agent-sandbox"],
+                        capture_output=True, timeout=300,
+                        creationflags=self._creation_flags(),
+                    )
+                    if sandbox_proc.returncode != 0:
+                        self.log_received.emit("沙盒镜像拉取失败", "error")
+                        self.status_changed.emit("启动失败")
+                        return
+                    self.log_received.emit("✓ 沙盒镜像拉取完成", "info")
+
+                # docker compose up -d
+                self.log_received.emit("启动 Docker Compose 服务...", "info")
+                self.progress_updated.emit("启动 Compose 服务...")
+                proc = subprocess.run(
+                    ["wsl", "-d", distro, "--", "bash", "-c",
+                     f"cd {deploy_dir} && docker compose -f docker-compose.yml --env-file .env up -d"],
+                    capture_output=True, timeout=120,
+                    creationflags=self._creation_flags(),
+                )
+
+                if proc.returncode != 0:
+                    # 详细输出错误信息
+                    self.log_received.emit(f"返回码: {proc.returncode}", "debug")
+                    self.log_received.emit(f"部署目录: {deploy_dir}", "debug")
+                    self.log_received.emit(f"STDOUT:\n{self._clean_stderr(proc.stdout, 0)}", "debug")
+                    self.log_received.emit(f"STDERR:\n{self._clean_stderr(proc.stderr, 0)}", "debug")
+                    self.log_received.emit("Compose 启动失败，详见上方 DEBUG 日志", "error")
+                    self.status_changed.emit("启动失败")
+                    return
+
+                self.is_running = True
+                self.log_received.emit("Compose 服务已启动，等待就绪...", "info")
+
+                # 仅首次部署时，标记需要显示弹窗（等待 napcat token 捕获后再显示）
+                if env_exists != "yes":
+                    self._pending_deploy_info = (env_content, deploy_mode)
+
+                threading.Thread(target=self._log_reader, args=(distro, deploy_dir), daemon=True).start()
+                threading.Thread(target=self._health_check, daemon=True).start()
+
+            except Exception as e:
+                self.log_received.emit(f"部署失败: {e}", "error")
+                self.status_changed.emit("启动失败")
+
+        threading.Thread(target=_deploy, daemon=True).start()
+        return True
+
+    def stop_services(self):
+        """停止 Docker Compose 服务"""
+        self._stop_event.set()
+        was_running = self.is_running
+        self.is_running = False
+
+        if self._log_process and self._log_process.poll() is None:
+            try:
+                self._log_process.terminate()
+            except Exception:
+                pass
+            self._log_process = None
+
+        if not was_running:
+            self.status_changed.emit("已停止")
+            return
+
+        distro = DISTRO_NAME
+        self.log_received.emit("正在停止服务...", "info")
+
+        def _do_stop():
+            try:
+                wsl_home = self._wsl_exec(distro, "echo $HOME").strip()
+                if not wsl_home:
+                    wsl_home = "/root"
+                deploy_dir = f"{wsl_home}/nekro_agent"
+
+                subprocess.run(
+                    ["wsl", "-d", distro, "--", "bash", "-c",
+                     f"cd {deploy_dir} && docker compose -f docker-compose.yml down"],
+                    capture_output=True, timeout=60,
+                    creationflags=self._creation_flags(),
+                )
+                self.log_received.emit("服务已停止", "info")
+
+                # 关闭 NekroAgent 发行版
+                self.log_received.emit(f"关闭 {distro} 发行版...", "info")
+                subprocess.run(["wsl", "--terminate", distro], capture_output=True, timeout=30)
+                self.log_received.emit(f"{distro} 已关闭", "info")
+            except subprocess.TimeoutExpired:
+                self.log_received.emit("停止服务超时", "warn")
+            except Exception as e:
+                self.log_received.emit(f"停止服务异常: {e}", "error")
+            finally:
+                self.status_changed.emit("已停止")
+
+        threading.Thread(target=_do_stop, daemon=True).start()
+
+    def update_services(self):
+        """拉取最新镜像并重启服务"""
+        distro = DISTRO_NAME
+        self.log_received.emit("开始更新服务...", "info")
+
+        def _do_update():
+            try:
+                wsl_home = self._wsl_exec(distro, "echo $HOME").strip()
+                if not wsl_home:
+                    wsl_home = "/root"
+                deploy_dir = f"{wsl_home}/nekro_agent"
+
+                # 拉取最新镜像（只更新 nekroagent 和 sandbox）
+                self.log_received.emit("拉取 NekroAgent 镜像...", "info")
+                self.status_changed.emit("更新中...")
+                pull_proc = subprocess.Popen(
+                    ["wsl", "-d", distro, "--", "bash", "-c",
+                     f"cd {deploy_dir} && docker compose -f docker-compose.yml pull nekro_agent 2>&1"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    creationflags=self._creation_flags(),
+                )
+                while True:
+                    line = pull_proc.stdout.readline()
+                    if not line and pull_proc.poll() is not None:
+                        break
+                    if line:
+                        text = self._safe_decode(line).strip()
+                        if text and not self._is_wsl_noise(text):
+                            self.log_received.emit(f"[镜像拉取] {text}", "info")
+                pull_proc.wait()
+                if pull_proc.returncode != 0:
+                    self.log_received.emit("NekroAgent 镜像拉取失败", "error")
+                    self.status_changed.emit("更新失败")
+                    return
+
+                # 拉取沙盒镜像
+                self.log_received.emit("拉取沙盒镜像...", "info")
+                sandbox_proc = subprocess.run(
+                    ["wsl", "-d", distro, "--", "docker", "pull", "kromiose/nekro-agent-sandbox"],
+                    capture_output=True, timeout=300,
+                    creationflags=self._creation_flags(),
+                )
+                if sandbox_proc.returncode != 0:
+                    self.log_received.emit("沙盒镜像拉取失败", "error")
+                    self.status_changed.emit("更新失败")
+                    return
+                self.log_received.emit("✓ 镜像拉取完成", "info")
+
+                # 重启服务
+                self.log_received.emit("重启服务...", "info")
+                proc = subprocess.run(
+                    ["wsl", "-d", distro, "--", "bash", "-c",
+                     f"cd {deploy_dir} && docker compose -f docker-compose.yml --env-file .env up -d"],
+                    capture_output=True, timeout=120,
+                    creationflags=self._creation_flags(),
+                )
+                if proc.returncode != 0:
+                    self.log_received.emit(f"重启失败: {self._clean_stderr(proc.stderr, 300)}", "error")
+                    self.status_changed.emit("更新失败")
+                    return
+
+                self.log_received.emit("✓ 服务更新完成", "info")
+                self.status_changed.emit("运行中")
+            except subprocess.TimeoutExpired:
+                self.log_received.emit("更新超时", "error")
+                self.status_changed.emit("更新失败")
+            except Exception as e:
+                self.log_received.emit(f"更新异常: {e}", "error")
+                self.status_changed.emit("更新失败")
+
+        threading.Thread(target=_do_update, daemon=True).start()
+
+    def uninstall_environment(self):
+        """卸载：停止服务 → 删除容器/镜像 → 删除 WSL 发行版"""
+        distro = DISTRO_NAME
+        self.log_received.emit("开始卸载环境...", "info")
+        self.status_changed.emit("卸载中...")
+
+        # 先同步停止日志和状态
+        self._stop_event.set()
+        self.is_running = False
+        if self._log_process and self._log_process.poll() is None:
+            try:
+                self._log_process.terminate()
+            except Exception:
+                pass
+            self._log_process = None
+
+        def _do_uninstall():
+            try:
+                wsl_home = self._wsl_exec(distro, "echo $HOME").strip()
+                if not wsl_home:
+                    wsl_home = "/root"
+                deploy_dir = f"{wsl_home}/nekro_agent"
+
+                # 1. 停止并删除容器
+                self.log_received.emit("[卸载] 1/3 停止并删除容器...", "info")
+                self._wsl_exec(distro,
+                    f"cd {deploy_dir} && docker compose -f docker-compose.yml down -v 2>/dev/null; "
+                    "docker system prune -af 2>/dev/null",
+                    timeout=120)
+                self.log_received.emit("[卸载] ✓ 容器已清除", "info")
+
+                # 2. 删除部署目录
+                self.log_received.emit("[卸载] 2/3 清理部署文件...", "info")
+                self._wsl_exec(distro, f"rm -rf {deploy_dir}")
+                self.log_received.emit("[卸载] ✓ 部署文件已清理", "info")
+
+                # 3. 删除 WSL 发行版
+                self.log_received.emit("[卸载] 3/3 删除 WSL 发行版...", "info")
+                self.remove_distro()
+                self.log_received.emit("[卸载] ✓ 环境卸载完成", "info")
+
+                # 清除配置
+                if self.config:
+                    self.config.set("first_run", True)
+                    self.config.set("deploy_mode", "")
+                    self.config.set("wsl_distro", "")
+                    self.config.set("wsl_install_dir", "")
+                    self.config.set("data_dir", "")
+                    self.config.set("deploy_info", None)
+
+                self.status_changed.emit("已卸载")
+
+            except Exception as e:
+                self.log_received.emit(f"卸载异常: {e}", "error")
+                self.status_changed.emit("卸载失败")
+
+        threading.Thread(target=_do_uninstall, daemon=True).start()
+
+    # ------------------------------------------------------------------ #
+    #  日志流
+    # ------------------------------------------------------------------ #
+
+    def _log_reader(self, distro, deploy_dir):
+        """通过 docker compose logs -f 流式读取日志"""
+        napcat_token_pattern = re.compile(r'WebUi.*token=([a-zA-Z0-9]+)')
+        try:
+            self._log_process = subprocess.Popen(
+                ["wsl", "-d", distro, "--", "bash", "-c",
+                 f"cd {deploy_dir} && docker compose -f docker-compose.yml logs -f --tail=50"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                creationflags=self._creation_flags(),
+            )
+
+            for line in iter(self._log_process.stdout.readline, b''):
+                if self._stop_event.is_set():
+                    break
+                text = line.decode("utf-8", errors="ignore").rstrip()
+                if text:
+                    self.log_received.emit(text, "vm")
+                    # 捕获 NapCat WebUI token
+                    m = napcat_token_pattern.search(text)
+                    if m and self.config:
+                        token = m.group(1)
+                        info = self.config.get("deploy_info") or {}
+                        if info.get("napcat_token") != token:
+                            info["napcat_token"] = token
+                            self.config.set("deploy_info", info)
+                            self.log_received.emit(f"[NapCat] 已捕获 WebUI Token: {token}", "info")
+                            # 如果有待显示的部署信息，现在显示
+                            if hasattr(self, '_pending_deploy_info') and self._pending_deploy_info:
+                                env_content, deploy_mode = self._pending_deploy_info
+                                self._show_deploy_info(env_content, deploy_mode)
+                                self._pending_deploy_info = None
+
+        except Exception as e:
+            if not self._stop_event.is_set():
+                self.log_received.emit(f"日志读取异常: {e}", "debug")
+        finally:
+            if self._log_process and self._log_process.poll() is None:
+                try:
+                    self._log_process.terminate()
+                except Exception:
+                    pass
+
+    # ------------------------------------------------------------------ #
+    #  健康检查
+    # ------------------------------------------------------------------ #
+
+    def _health_check(self):
+        """轮询 http://localhost:8021 直到返回 200"""
+        timeout = 300
+        start = time.time()
+        interval = 2.0
+
+        while time.time() - start < timeout and not self._stop_event.is_set():
+            try:
+                resp = urlopen("http://localhost:8021", timeout=5)
+                if resp.status == 200:
+                    elapsed = time.time() - start
+                    self.log_received.emit(f"服务已就绪！(耗时 {elapsed:.1f}s)", "info")
+                    self.boot_finished.emit()
+                    self.status_changed.emit("运行中")
+                    return
+            except (URLError, OSError):
+                pass
+            except Exception:
+                pass
+
+            time.sleep(interval)
+
+        if not self._stop_event.is_set():
+            self.log_received.emit("服务启动超时，请检查日志", "error")
+            self.status_changed.emit("启动超时")
+
+    # ------------------------------------------------------------------ #
+    #  工具方法
+    # ------------------------------------------------------------------ #
+
+    def _wsl_exec(self, distro, cmd, timeout=60):
+        """在 WSL 发行版中执行命令并返回 stdout"""
+        try:
+            proc = subprocess.run(
+                ["wsl", "-d", distro, "--", "bash", "-c", cmd],
+                capture_output=True, timeout=timeout,
+                creationflags=self._creation_flags(),
+            )
+            return self._safe_decode(proc.stdout)
+        except Exception:
+            return ""
+
+    def _copy_to_wsl(self, distro, local_path, wsl_path):
+        """将 Windows 本地文件复制到 WSL 内"""
+        win_path = os.path.abspath(local_path).replace("\\", "/")
+        wsl_win_path = self._wsl_exec(distro, f'wslpath "{win_path}"').strip()
+        if wsl_win_path:
+            self._wsl_exec(distro, f'cp "{wsl_win_path}" "{wsl_path}"')
+        else:
+            drive = win_path[0].lower()
+            mnt_path = f"/mnt/{drive}{win_path[2:]}"
+            self._wsl_exec(distro, f'cp "{mnt_path}" "{wsl_path}"')
+
+    def _write_to_wsl(self, distro, content, wsl_path):
+        """将字符串内容写入 WSL 内文件"""
+        import base64
+        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        self._wsl_exec(distro, f'echo "{encoded}" | base64 -d > "{wsl_path}"')
+
+    def _show_deploy_info(self, env_content, deploy_mode):
+        """部署成功后保存凭据并发送信号给 UI 弹窗"""
+        # 从 env 内容中提取关键信息
+        env_vars = {}
+        for line in env_content.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                env_vars[key.strip()] = value.strip()
+
+        info = {
+            "port": env_vars.get("NEKRO_EXPOSE_PORT", "8021"),
+            "admin_password": env_vars.get("NEKRO_ADMIN_PASSWORD", ""),
+            "onebot_token": env_vars.get("ONEBOT_ACCESS_TOKEN", ""),
+            "deploy_mode": deploy_mode,
+        }
+        if deploy_mode == "napcat":
+            info["napcat_port"] = env_vars.get("NAPCAT_EXPOSE_PORT", "6099")
+
+        # 保存到配置，支持后续再次查看
+        if self.config:
+            self.config.set("deploy_info", info)
+
+        # 日志也输出一份
+        self.log_received.emit("=== 部署完成！===", "info")
+        self.log_received.emit(f"管理员账号: admin | 密码: {info['admin_password']}", "info")
+        self.log_received.emit(f"Web 访问地址: http://127.0.0.1:{info['port']}", "info")
+
+        # 发信号给 UI 弹窗
+        self.deploy_info_ready.emit(info)
+
+    def _prepare_env(self, env_template_path, data_dir):
+        """读取 env 模板文件，填充必要值，返回最终 .env 内容"""
+        content = ""
+        if os.path.exists(env_template_path):
+            with open(env_template_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+        lines = content.splitlines()
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                new_lines.append(line)
+                continue
+
+            key = stripped.split("=", 1)[0].strip()
+            value = stripped.split("=", 1)[1].strip()
+
+            if key == "NEKRO_DATA_DIR" and not value:
+                new_lines.append(f"NEKRO_DATA_DIR={data_dir}")
+            elif key == "QDRANT_API_KEY" and not value:
+                new_lines.append(f"QDRANT_API_KEY={self._random_token(32)}")
+            elif key == "ONEBOT_ACCESS_TOKEN" and not value:
+                new_lines.append(f"ONEBOT_ACCESS_TOKEN={self._random_token(32)}")
+            elif key == "NEKRO_ADMIN_PASSWORD" and not value:
+                new_lines.append(f"NEKRO_ADMIN_PASSWORD={self._random_token(16)}")
+            else:
+                new_lines.append(line)
+
+        return "\n".join(new_lines) + "\n"
+
+    @staticmethod
+    def _random_token(length=32):
+        alphabet = string.ascii_letters + string.digits
+        return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+    @staticmethod
+    def _creation_flags():
+        """返回 Windows 平台的进程创建标志"""
+        if sys.platform == "win32":
+            return subprocess.CREATE_NO_WINDOW
+        return 0
