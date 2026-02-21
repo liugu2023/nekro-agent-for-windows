@@ -33,8 +33,8 @@
 
 1. 克隆仓库
 ```bash
-git clone <repository-url>
-cd na_for_windows
+git clone https://github.com/liugu2023/nekro-agent-for-windows
+cd nekro-agent-for-windows
 ```
 
 2. 安装依赖
