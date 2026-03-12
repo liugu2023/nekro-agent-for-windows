@@ -1,190 +1,89 @@
-# Nekro-Agent Windows 管理系统
+# Nekro-Agent Windows Manager
 
-一个基于 PyQt6 的 Windows 跨平台虚拟机管理和 Docker 容器编排系统，用于在 Windows 上快速部署和管理 Nekro-Agent 服务。
+基于 PyQt6 的 Windows 图形化部署工具，用于在本机通过独立运行时环境部署和管理 Nekro-Agent。
 
-## 功能特性
+## 当前状态
 
-- 🚀 **一键部署** - 自动配置 WSL、Docker 和 Nekro-Agent 服务
-- 🖥️ **图形化界面** - 简洁直观的 PyQt6 GUI 界面
-- 📊 **日志分类** - 应用日志、NekroAgent 日志、NapCat 日志分类显示
-- 🔄 **服务管理** - 启动、停止、更新、卸载服务
-- 🌐 **浏览器集成** - 一键打开服务管理界面
-- 💾 **系统托盘** - 最小化到托盘，后台运行
-- ⚙️ **开机自启** - 可选的开机自动启动功能
-- 🎯 **首次运行向导** - 引导用户完成初始配置
+- 当前默认后端为 `WSL`
+- 项目已重构为后端抽象结构，便于后续接入 `Hyper-V`
+- `Hyper-V` 后端目前已具备环境检测、基础镜像下载、交换机/NAT/VM 创建骨架
+- `Hyper-V` 的 cloud-init、SSH 初始化、Docker 安装和 Compose 部署仍待补齐
 
-## 系统要求
+## 功能
 
-- Windows 10/11 (64位)
-- WSL 2
-- 至少 4GB 可用内存
-- 至少 10GB 可用磁盘空间
-
-## 快速开始
-
-### 方式一：使用可执行文件（推荐）
-
-1. 下载最新的 Release 版本
-2. 解压到任意目录
-3. 运行 `NekroAgent-Setup-v1.0.0-beta.exe`
-4. 按照首次运行向导完成配置
-
-### 方式二：从源码运行
-
-1. 克隆仓库
-```bash
-git clone https://github.com/liugu2023/nekro-agent-for-windows
-cd nekro-agent-for-windows
-```
-
-2. 安装依赖
-```bash
-pip install -r requirements.txt
-```
-
-3. 运行程序
-```bash
-python main.py
-```
-
-启用调试模式：
-```bash
-python main.py --debug
-```
-
-## 部署模式
-
-### 精简版 (lite)
-- 仅包含 Nekro-Agent 核心服务
-- 适合轻量级部署
-- 需要外部 OneBot 实现
-
-### 完整版 (napcat)
-- 包含 Nekro-Agent + NapCat
-- 一站式解决方案
-- 内置 QQ 机器人支持
-
-## 使用说明
-
-### 首次运行
-
-1. 程序会自动检测 WSL 环境
-2. 如果未安装 WSL，会提示安装
-3. 选择部署模式（精简版/完整版）
-4. 等待自动部署完成
-5. 记录显示的管理员密码和访问地址
-
-### 日常使用
-
-- **启动服务**：点击"一键部署项目"按钮
-- **查看日志**：切换到"日志"页面，选择日志源
-- **访问服务**：切换到"浏览器"页面，点击对应按钮
-- **系统设置**：配置开机自启、数据目录等
-- **更新服务**：点击"检查环境更新"拉取最新镜像
-
-### 关闭程序
-
-点击关闭按钮时可选择：
-- **最小化到托盘** - 服务继续运行
-- **停止服务并退出** - 完全关闭
+- 图形化环境检测、初始化、部署、更新、卸载
+- 首次运行向导
+- Nekro-Agent / NapCat / 应用日志分离展示
+- 浏览器快捷访问
+- 运行环境内文件路径快捷打开
 
 ## 目录结构
 
-```
+```text
 na_for_windows/
-├── main.py                 # 程序入口
-├── core/                   # 核心模块
-│   ├── config_manager.py   # 配置管理
-│   └── wsl_manager.py      # WSL 管理
-├── ui/                     # 界面模块
-│   ├── main_window.py      # 主窗口
-│   ├── first_run_dialog.py # 首次运行向导
-│   ├── widgets.py          # 自定义组件
-│   └── styles.py           # 样式定义
-├── assets/                 # 资源文件
-│   ├── NekroAgent.png      # 应用图标
-│   └── check.png           # 复选框图标
-├── env                     # 环境变量模板
-├── docker-compose_*.yml    # Docker 编排文件
-└── build.spec              # 打包配置
+├── core/
+│   ├── backend_base.py
+│   ├── backend_factory.py
+│   ├── config_manager.py
+│   ├── hyperv_manager.py
+│   ├── hyperv_backend.py
+│   ├── mirror_config.py
+│   ├── powershell.py
+│   ├── runtime_image_fetcher.py
+│   ├── ssh_transport.py
+│   └── wsl_manager.py
+├── ui/
+│   ├── first_run_dialog.py
+│   ├── main_window.py
+│   ├── styles.py
+│   └── widgets.py
+├── assets/
+├── docker-compose_with_napcat.yml
+├── docker-compose_withnot_napcat.yml
+├── env
+├── main.py
+└── build.spec
 ```
 
-## 配置文件
-
-配置文件位于 `config.json`，包含以下内容：
-
-```json
-{
-  "autostart": false,
-  "deploy_mode": "napcat",
-  "wsl_distro": "NekroAgent",
-  "wsl_install_dir": "安装路径",
-  "data_dir": "/root/nekro_agent_data",
-  "deploy_info": {
-    "port": "8021",
-    "admin_password": "管理员密码",
-    "onebot_token": "OneBot令牌",
-    "napcat_port": "6099",
-    "napcat_token": "NapCat令牌"
-  }
-}
-```
-
-## 开发
-
-### 打包为可执行文件
+## 运行
 
 ```bash
-# 运行打包脚本
-build.bat
-
-# 或手动打包
-pyinstaller build.spec
+pip install -r requirements.txt
+python main.py
 ```
 
-打包后的文件位于 `dist/NekroAgent/`
-
-### 调试模式
+调试模式：
 
 ```bash
 python main.py --debug
 ```
 
-调试模式会显示详细的 DEBUG 级别日志。
+## 配置
 
-## 常见问题
+运行时配置写入 `config.json`。核心字段如下：
 
-### WSL 安装失败
-- 确保 Windows 版本支持 WSL 2
-- 以管理员权限运行程序
-- 检查网络连接
+```json
+{
+  "backend": "wsl",
+  "autostart": false,
+  "first_run": true,
+  "deploy_mode": "napcat",
+  "wsl_distro": "NekroAgent",
+  "wsl_install_dir": "D:/NekroAgent/wsl",
+  "data_dir": "/root/nekro_agent_data"
+}
+```
 
-### Docker 镜像拉取慢
-- 程序会自动尝试多个镜像源
-- 可以手动配置 Docker 镜像加速
+将 `backend` 改为 `hyperv` 后，重启应用即可切换到 Hyper-V 后端骨架流程。
 
-### 服务启动失败
-- 查看日志页面的详细错误信息
-- 确保端口 8021 和 6099 未被占用
-- 检查 WSL 虚拟机状态
+## 打包
 
-## 技术栈
+```bash
+build.bat
+```
 
-- **GUI**: PyQt6
-- **虚拟化**: WSL 2 + QEMU
-- **容器**: Docker + Docker Compose
-- **语言**: Python 3.8+
+## 后续计划
 
-## 许可证
-
-[添加许可证信息]
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-## 致谢
-
-- [Nekro-Agent](https://github.com/KroMiose/nekro-agent) - 核心服务
-- [NapCat](https://github.com/NapNeko/NapCatQQ) - QQ 机器人实现
-
+- 为 `Hyper-V` 后端补齐 cloud-init、SSH 初始化、Docker 安装与 Compose 部署
+- 将自动启动从仅配置项补成真实系统集成
+- 继续拆分 `WSLManager` 中的命令执行、Compose 部署和日志解析逻辑

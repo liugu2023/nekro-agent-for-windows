@@ -19,6 +19,7 @@ class ConfigManager:
             self.config_path = os.path.join(self.base_path, "config.json")
 
         self.default_config = {
+            "backend": "wsl",
             "shared_dir": "shared",
             "autostart": False,
             "first_run": True,
@@ -26,6 +27,18 @@ class ConfigManager:
             "wsl_distro": "",        # 检测到的发行版名称
             "wsl_install_dir": "",   # WSL 发行版安装目录 (Windows 路径)
             "data_dir": "",          # WSL 内数据目录路径
+            "hyperv_vm_name": "NekroAgent",
+            "hyperv_switch_name": "NekroAgentSwitch",
+            "hyperv_nat_name": "NekroAgentNat",
+            "hyperv_subnet": "192.168.77.0/24",
+            "hyperv_gateway_ip": "192.168.77.1",
+            "hyperv_guest_ip": "192.168.77.2",
+            "hyperv_ssh_port": 22,
+            "hyperv_username": "nekro",
+            "hyperv_install_dir": "",
+            "hyperv_ssh_key_path": "",
+            "hyperv_seed_disk": "",
+            "runtime_image_cache": "runtime_cache",
         }
         self.config = self.load_config()
 

@@ -2,34 +2,36 @@ import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QWidget, QStackedWidget,
                              QMessageBox, QLineEdit, QFileDialog,
-                             QProgressBar)
+                             QProgressBar, QSizePolicy)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+
+from ui.styles import STYLESHEET
 
 
 class EnvCheckThread(QThread):
     """后台环境检测线程"""
     finished = pyqtSignal(dict)
 
-    def __init__(self, wsl_manager):
+    def __init__(self, backend):
         super().__init__()
-        self.wsl_manager = wsl_manager
+        self.backend = backend
 
     def run(self):
-        result = self.wsl_manager.check_environment()
+        result = self.backend.check_environment()
         self.finished.emit(result)
 
 
-class CreateDistroThread(QThread):
-    """后台创建发行版线程"""
+class CreateRuntimeThread(QThread):
+    """后台创建运行环境线程"""
     finished = pyqtSignal(bool)
 
-    def __init__(self, wsl_manager, install_dir):
+    def __init__(self, backend, install_dir):
         super().__init__()
-        self.wsl_manager = wsl_manager
+        self.backend = backend
         self.install_dir = install_dir
 
     def run(self):
-        ok = self.wsl_manager.create_distro(self.install_dir)
+        ok = self.backend.create_runtime(self.install_dir)
         self.finished.emit(ok)
 
 
@@ -38,15 +40,17 @@ class FirstRunDialog(QDialog):
 
     deploy_requested = pyqtSignal(str)  # 发出部署模式: "lite" 或 "napcat"
 
-    def __init__(self, wsl_manager, config, parent=None):
+    def __init__(self, backend, config, parent=None):
         super().__init__(parent)
-        self.wsl_manager = wsl_manager
+        self.backend = backend
         self.config = config
         self.env_result = None
 
-        self.setWindowTitle("Nekro-Agent 环境配置向导")
-        self.setFixedSize(560, 480)
+        self.setWindowTitle("Nekro Agent 环境配置向导")
+        self.resize(660, 560)
+        self.setMinimumSize(600, 520)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        self.setStyleSheet(STYLESHEET)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(30, 30, 30, 30)
@@ -62,11 +66,50 @@ class FirstRunDialog(QDialog):
 
         self.stack.setCurrentIndex(0)
 
-        # 监听 wsl_manager 的进度信号
-        self.wsl_manager.progress_updated.connect(self._on_progress)
+        self.backend.progress_updated.connect(self._on_progress)
 
         # 启动检测
         self._start_check()
+
+    def _show_notice_dialog(self, title, text, button_text="确定", danger=False):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setMinimumWidth(340)
+        dialog.setMaximumWidth(440)
+        dialog.setModal(True)
+        dialog.setStyleSheet(STYLESHEET)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        title_label = QLabel(title)
+        title_label.setProperty("role", "dialog_title")
+        title_label.setWordWrap(True)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(title_label)
+
+        desc_label = QLabel(text)
+        desc_label.setProperty("role", "dialog_desc")
+        desc_label.setWordWrap(True)
+        desc_label.setTextFormat(Qt.TextFormat.PlainText)
+        desc_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(desc_label)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+        button = QPushButton(button_text)
+        if danger:
+            button.setStyleSheet(
+                "QPushButton { min-height: 36px; background: #c94f63; color: white; "
+                "border: 1px solid #c94f63; border-radius: 10px; padding: 0 16px; font-size: 13px; font-weight: 600; }"
+                "QPushButton:hover { background: #b84558; border-color: #b84558; }"
+            )
+        button.clicked.connect(dialog.accept)
+        button_row.addWidget(button)
+        layout.addLayout(button_row)
+        dialog.adjustSize()
+        dialog.exec()
 
     # ------------------------------------------------------------------ #
     #  页面 0：环境检测
@@ -79,6 +122,7 @@ class FirstRunDialog(QDialog):
 
         title = QLabel("环境检测")
         title.setStyleSheet("font-size: 22px; font-weight: bold; color: #24292f;")
+        title.setWordWrap(True)
         layout.addWidget(title)
 
         desc = QLabel("正在检测系统环境，请稍候...")
@@ -88,10 +132,11 @@ class FirstRunDialog(QDialog):
         self.check_desc = desc
 
         # 检测项
-        self.lbl_wsl = self._create_check_item("WSL2")
-        self.lbl_distro = self._create_check_item("NekroAgent 运行环境")
-        self.lbl_docker = self._create_check_item("Docker")
-        self.lbl_compose = self._create_check_item("Docker Compose")
+        labels = self._check_item_labels()
+        self.lbl_wsl = self._create_check_item(labels[0])
+        self.lbl_distro = self._create_check_item(labels[1])
+        self.lbl_docker = self._create_check_item(labels[2])
+        self.lbl_compose = self._create_check_item(labels[3])
 
         layout.addWidget(self.lbl_wsl)
         layout.addWidget(self.lbl_distro)
@@ -136,6 +181,8 @@ class FirstRunDialog(QDialog):
         lbl = QLabel(f"⏳  {name}")
         lbl.setStyleSheet("font-size: 15px; color: #57606a; padding: 5px 0;")
         lbl.setProperty("check_name", name)
+        lbl.setWordWrap(True)
+        lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         return lbl
 
     def _update_check_item(self, label, ok, detail=""):
@@ -148,7 +195,7 @@ class FirstRunDialog(QDialog):
             label.setStyleSheet("font-size: 15px; color: #cf222e; padding: 5px 0;")
 
     def _start_check(self):
-        self._check_thread = EnvCheckThread(self.wsl_manager)
+        self._check_thread = EnvCheckThread(self.backend)
         self._check_thread.finished.connect(self._on_check_done)
         self._check_thread.start()
 
@@ -171,16 +218,20 @@ class FirstRunDialog(QDialog):
             self._action_mode = "next"
         else:
             if not result["wsl_installed"]:
-                self.check_desc.setText("WSL2 未安装，请点击安装。")
-                self.btn_action.setText("安装 WSL2")
+                self.check_desc.setText(f"{self.backend.display_name} 未安装或尚未完成启用，请点击安装。")
+                self.btn_action.setText(f"安装 {self.backend.display_name}")
                 self._action_mode = "install_wsl"
             elif not result["distro"]:
-                self.check_desc.setText("NekroAgent 运行环境未创建，请点击创建。")
+                self.check_desc.setText("Nekro Agent 运行环境未创建，请点击创建。")
                 self.btn_action.setText("创建运行环境")
-                self._action_mode = "create_distro"
+                self._action_mode = "create_runtime"
             elif not result["docker_available"] or not result["compose_available"]:
-                self.check_desc.setText("Docker 未安装，请点击安装。")
-                self.btn_action.setText("安装 Docker")
+                if self.backend.backend_key == "hyperv":
+                    self.check_desc.setText("SSH 初始化或 Docker 未完成，请点击继续初始化。")
+                    self.btn_action.setText("继续初始化")
+                else:
+                    self.check_desc.setText("Docker 未安装，请点击安装。")
+                    self.btn_action.setText("安装 Docker")
                 self._action_mode = "install_docker"
             self.btn_action.setEnabled(True)
 
@@ -192,23 +243,29 @@ class FirstRunDialog(QDialog):
             return
 
         if mode == "install_wsl":
-            reply = QMessageBox.information(
-                self, "安装 WSL2",
-                "将以管理员权限安装 WSL2。\n\n"
+            dialog = QMessageBox(self)
+            dialog.setIcon(QMessageBox.Icon.Information)
+            dialog.setWindowTitle(f"安装 {self.backend.display_name}")
+            dialog.setText(
+                f"将以管理员权限安装 {self.backend.display_name}。\n\n"
                 "注意：安装过程需要 5-10 分钟，请耐心等待。\n"
-                "安装完成后将自动重启电脑。",
-                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+                "安装完成后将自动重启电脑。"
             )
+            dialog.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+            dialog.setStyleSheet(STYLESHEET)
+            for label in dialog.findChildren(QLabel):
+                label.setWordWrap(True)
+            reply = dialog.exec()
             if reply == QMessageBox.StandardButton.Ok:
-                self.wsl_manager.install_wsl()
+                self.backend.install_wsl()
             return
 
-        if mode == "create_distro":
+        if mode == "create_runtime":
             self.stack.setCurrentIndex(1)
             return
 
         if mode == "install_docker":
-            self.wsl_manager.install_docker()
+            self.backend.install_docker()
             self.check_desc.setText("正在安装 Docker...")
             self.btn_action.setEnabled(False)
             self.check_progress.setVisible(True)
@@ -242,11 +299,12 @@ class FirstRunDialog(QDialog):
         layout = QVBoxLayout(page)
         layout.setSpacing(18)
 
-        title = QLabel("创建 NekroAgent 运行环境")
+        title = QLabel("创建 Nekro Agent 运行环境")
         title.setStyleSheet("font-size: 22px; font-weight: bold; color: #24292f;")
+        title.setWordWrap(True)
         layout.addWidget(title)
 
-        desc = QLabel("将下载 Ubuntu 并创建专用 WSL 发行版，与系统已有的 WSL 环境互不影响。")
+        desc = QLabel(f"将下载 Ubuntu 并创建专用 {self.backend.display_name} 运行环境，与系统已有环境互不影响。")
         desc.setStyleSheet("font-size: 13px; color: #57606a;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
@@ -257,21 +315,22 @@ class FirstRunDialog(QDialog):
         layout.addWidget(lbl_dir)
 
         dir_box = QHBoxLayout()
-        self.dir_edit = QLineEdit(self.wsl_manager.get_default_install_dir())
+        self.dir_edit = QLineEdit(self.backend.get_default_install_dir())
         self.dir_edit.setStyleSheet(
             "padding: 8px; border: 1px solid #d0d7de; border-radius: 6px; "
             "background: white; font-size: 13px;"
         )
+        self.dir_edit.setMinimumWidth(260)
         btn_browse = QPushButton("浏览...")
         btn_browse.setFixedHeight(35)
-        btn_browse.setFixedWidth(80)
+        btn_browse.setMinimumWidth(80)
         btn_browse.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_browse.clicked.connect(self._browse_install_dir)
         dir_box.addWidget(self.dir_edit)
         dir_box.addWidget(btn_browse)
         layout.addLayout(dir_box)
 
-        hint = QLabel("此目录将存放 WSL 虚拟磁盘文件，建议预留 10GB 以上空间。")
+        hint = QLabel(f"此目录将存放 {self.backend.display_name} 运行时文件，建议预留 10GB 以上空间。")
         hint.setStyleSheet("font-size: 12px; color: #8b949e;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -335,12 +394,12 @@ class FirstRunDialog(QDialog):
         )
         if d:
             # 在选择的目录下加上 NekroAgent 子目录
-            self.dir_edit.setText(os.path.join(d, "NekroAgent", "wsl"))
+            self.dir_edit.setText(os.path.join(d, "NekroAgent", self.backend.backend_key))
 
     def _start_create(self):
         install_dir = self.dir_edit.text().strip()
         if not install_dir:
-            QMessageBox.warning(self, "提示", "请指定安装目录")
+            self._show_notice_dialog("提示", "请指定安装目录")
             return
 
         self.btn_create.setEnabled(False)
@@ -349,7 +408,7 @@ class FirstRunDialog(QDialog):
         self.create_progress.setVisible(True)
         self.lbl_progress.setText("准备下载...")
 
-        self._create_thread = CreateDistroThread(self.wsl_manager, install_dir)
+        self._create_thread = CreateRuntimeThread(self.backend, install_dir)
         self._create_thread.finished.connect(self._on_create_done)
         self._create_thread.start()
 
@@ -398,22 +457,23 @@ class FirstRunDialog(QDialog):
 
         title = QLabel("选择部署版本")
         title.setStyleSheet("font-size: 22px; font-weight: bold; color: #24292f;")
+        title.setWordWrap(True)
         layout.addWidget(title)
 
-        desc = QLabel("请选择要部署的 Nekro-Agent 版本:")
+        desc = QLabel("请选择要部署的 Nekro Agent 版本:")
         desc.setStyleSheet("font-size: 14px; color: #57606a;")
         layout.addWidget(desc)
 
         self.card_lite = self._create_mode_card(
             "精简版 (Lite)",
-            "仅包含核心 Nekro-Agent 服务\n适合不需要 QQ 机器人功能的用户",
+            "仅包含核心 Nekro Agent 服务\n适合不需要 QQ 机器人功能的用户",
             "lite",
         )
         layout.addWidget(self.card_lite)
 
         self.card_napcat = self._create_mode_card(
             "完整版 (Napcat)",
-            "包含 Nekro-Agent + QQ 机器人 (Napcat)\n需要更多系统资源",
+            "包含 Nekro Agent + QQ 机器人 (Napcat)\n需要更多系统资源",
             "napcat",
         )
         layout.addWidget(self.card_napcat)
@@ -424,7 +484,8 @@ class FirstRunDialog(QDialog):
     def _create_mode_card(self, title, desc, mode):
         card = QPushButton()
         card.setCursor(Qt.CursorShape.PointingHandCursor)
-        card.setFixedHeight(90)
+        card.setMinimumHeight(104)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         card.setStyleSheet(
             "QPushButton { background-color: #ffffff; border: 2px solid #d0d7de; "
             "border-radius: 10px; padding: 15px 20px; }"
@@ -472,9 +533,10 @@ class FirstRunDialog(QDialog):
 
         title = QLabel("配置数据目录")
         title.setStyleSheet("font-size: 22px; font-weight: bold; color: #24292f;")
+        title.setWordWrap(True)
         layout.addWidget(title)
 
-        desc = QLabel("数据目录用于存储 NekroAgent 运行数据（数据库、配置、日志等）。")
+        desc = QLabel("数据目录用于存储 Nekro Agent 运行数据（数据库、配置、日志等）。")
         desc.setStyleSheet("font-size: 14px; color: #57606a;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
@@ -488,9 +550,14 @@ class FirstRunDialog(QDialog):
             "padding: 8px; border: 1px solid #d0d7de; border-radius: 6px; "
             "background: white; font-size: 13px;"
         )
+        self.datadir_edit.setMinimumWidth(260)
         layout.addWidget(self.datadir_edit)
 
-        hint = QLabel("此目录位于 WSL 内部，可通过 \\\\wsl$\\NekroAgent\\... 在 Windows 中访问。")
+        sample_path = self.backend.get_host_access_path("/root/nekro_agent_data")
+        hint_text = "此目录位于运行环境内部。"
+        if sample_path:
+            hint_text += f" Windows 侧访问路径示例: {sample_path}"
+        hint = QLabel(hint_text)
         hint.setStyleSheet("font-size: 12px; color: #8b949e;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -532,10 +599,25 @@ class FirstRunDialog(QDialog):
     def _confirm_datadir(self):
         data_dir = self.datadir_edit.text().strip()
         if not data_dir:
-            QMessageBox.warning(self, "提示", "请指定数据目录")
+            self._show_notice_dialog("提示", "请指定数据目录")
             return
         if self.config:
             self.config.set("data_dir", data_dir)
             self.config.set("first_run", False)
         self.deploy_requested.emit(self._selected_mode)
         self.accept()
+
+    def _check_item_labels(self):
+        if self.backend.backend_key == "hyperv":
+            return (
+                "Hyper-V 功能",
+                "Nekro Agent 虚拟机",
+                "SSH 与 Docker",
+                "Docker Compose",
+            )
+        return (
+            self.backend.display_name,
+            "Nekro Agent 运行环境",
+            "Docker",
+            "Docker Compose",
+        )

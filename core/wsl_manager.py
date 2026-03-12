@@ -9,7 +9,7 @@ import tempfile
 import re
 from urllib.request import urlopen, Request
 from urllib.error import URLError
-from PyQt6.QtCore import QObject, pyqtSignal
+from core.backend_base import BackendBase
 
 
 # 专用 WSL 发行版名称
@@ -23,15 +23,12 @@ ROOTFS_URLS = [
 ]
 
 
-class WSLManager(QObject):
-    log_received = pyqtSignal(str, str)    # (msg, level)
-    status_changed = pyqtSignal(str)       # 状态文本
-    boot_finished = pyqtSignal()           # 服务就绪
-    progress_updated = pyqtSignal(str)     # 安装进度文本
-    deploy_info_ready = pyqtSignal(dict)   # 部署凭据信息
+class WSLManager(BackendBase):
+    backend_key = "wsl"
+    display_name = "WSL"
 
     def __init__(self, config=None, base_path=None):
-        super().__init__()
+        super().__init__(config=config)
         if base_path:
             self.base_path = os.path.abspath(base_path)
         else:
@@ -43,10 +40,19 @@ class WSLManager(QObject):
                 if self.base_path.endswith('core'):
                     self.base_path = os.path.dirname(self.base_path)
 
-        self.config = config
         self.is_running = False
         self._log_process = None
         self._stop_event = threading.Event()
+
+    def get_runtime_name(self):
+        return DISTRO_NAME
+
+    def get_host_access_path(self, guest_path):
+        normalized = guest_path or "/"
+        return f"\\\\wsl$\\{DISTRO_NAME}{normalized}"
+
+    def create_runtime(self, install_dir):
+        return self.create_distro(install_dir)
 
     # ------------------------------------------------------------------ #
     #  日志辅助
