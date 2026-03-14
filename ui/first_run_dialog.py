@@ -45,6 +45,7 @@ class FirstRunDialog(QDialog):
         self.backend = backend
         self.config = config
         self.env_result = None
+        self._check_in_progress = False
 
         self.setWindowTitle("Nekro Agent 环境配置向导")
         self.resize(660, 560)
@@ -67,6 +68,7 @@ class FirstRunDialog(QDialog):
         self.stack.setCurrentIndex(0)
 
         self.backend.progress_updated.connect(self._on_progress)
+        self.backend.log_received.connect(self._on_backend_log)
 
         # 启动检测
         self._start_check()
@@ -195,11 +197,13 @@ class FirstRunDialog(QDialog):
             label.setStyleSheet("font-size: 15px; color: #cf222e; padding: 5px 0;")
 
     def _start_check(self):
+        self._check_in_progress = True
         self._check_thread = EnvCheckThread(self.backend)
         self._check_thread.finished.connect(self._on_check_done)
         self._check_thread.start()
 
     def _on_check_done(self, result):
+        self._check_in_progress = False
         self.env_result = result
 
         self._update_check_item(self.lbl_wsl, result["wsl_installed"])
@@ -234,6 +238,56 @@ class FirstRunDialog(QDialog):
                     self.btn_action.setText("安装 Docker")
                 self._action_mode = "install_docker"
             self.btn_action.setEnabled(True)
+
+    def _on_backend_log(self, msg, level="info"):
+        if not self._check_in_progress or not msg.startswith("[环境检测]"):
+            return
+
+        text = msg.strip()
+        if "1/4 检测" in text:
+            self.check_desc.setText("正在检测 WSL / 运行环境 / Docker / Compose，请稍候...")
+            return
+        if "2/4 检测" in text:
+            self._set_check_pending(self.lbl_distro)
+            return
+        if "3/4 检测" in text:
+            self._set_check_pending(self.lbl_docker)
+            return
+        if "4/4 检测" in text:
+            self._set_check_pending(self.lbl_compose)
+            return
+
+        if "WSL2 已安装" in text or "Hyper-V 已启用" in text:
+            self._update_check_item(self.lbl_wsl, True)
+        elif "WSL2 未安装" in text or "wsl 命令未找到" in text or "WSL 检测异常" in text:
+            self._update_check_item(self.lbl_wsl, False)
+        elif "Hyper-V 未启用" in text:
+            self._update_check_item(self.lbl_wsl, False)
+        elif "发行版已存在" in text:
+            runtime_name = self.backend.get_runtime_name() or "已创建"
+            self._update_check_item(self.lbl_distro, True, runtime_name)
+        elif "发行版不存在" in text or "虚拟机" in text and "不存在" in text:
+            self._update_check_item(self.lbl_distro, False, "未创建")
+        elif "虚拟机" in text and "已存在" in text:
+            runtime_name = self.backend.get_runtime_name() or "已创建"
+            self._update_check_item(self.lbl_distro, True, runtime_name)
+        elif "Docker 可用" in text:
+            self._update_check_item(self.lbl_docker, True)
+        elif "Docker 检测失败" in text or "Docker 检测异常" in text or "Docker 不可用" in text:
+            self._update_check_item(self.lbl_docker, False)
+        elif "Docker Compose 可用" in text:
+            self._update_check_item(self.lbl_compose, True)
+        elif "Docker Compose 检测失败" in text or "Docker Compose 检测异常" in text or "Docker Compose 不可用" in text:
+            self._update_check_item(self.lbl_compose, False)
+        elif "SSH 初始化已完成" in text:
+            self._update_check_item(self.lbl_docker, True, "SSH 已就绪")
+        elif "SSH 尚未就绪" in text:
+            self._update_check_item(self.lbl_docker, False, "SSH 未就绪")
+
+    def _set_check_pending(self, label):
+        name = label.property("check_name")
+        label.setText(f"⏳  {name}")
+        label.setStyleSheet("font-size: 15px; color: #57606a; padding: 5px 0;")
 
     def _handle_action(self):
         mode = getattr(self, '_action_mode', None)

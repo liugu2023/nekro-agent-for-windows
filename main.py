@@ -1,6 +1,7 @@
 import sys
 import os
 import argparse
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 from ui.main_window import MainWindow
 
@@ -61,6 +62,11 @@ def main():
     # 解析命令行参数
     parser = argparse.ArgumentParser()
     parser.add_argument('--debug', action='store_true', help='启用 debug 日志')
+    parser.add_argument(
+        '--disable-webview-gpu',
+        action='store_true',
+        help='禁用内置 WebView GPU 加速，仅在出现闪烁或渲染异常时使用',
+    )
     args = parser.parse_args()
     DEBUG_MODE = args.debug
 
@@ -83,8 +89,18 @@ def main():
     # 尝试禁用无障碍功能以规避某些 Windows 环境下的刷屏报错
     os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = "--disable-features=Accessibility"
 
-    # 禁用 QWebEngineView GPU 合成，解决 Windows 下 WebView 闪烁问题
-    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
+    chromium_flags = ["--disable-features=CalculateNativeWinOcclusion"]
+
+    # 默认保留 GPU 加速，避免内置 WebView 退化为软件渲染导致明显卡顿。
+    # 同时关闭 Windows 原生遮挡检测，减少部分机器上的偶发闪烁。
+    # 仅在个别机器出现驱动兼容问题时允许手动降级。
+    if args.disable_webview_gpu:
+        chromium_flags.append("--disable-gpu")
+        print("[LOG] 已按参数禁用 WebView GPU 加速")
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(chromium_flags)
+
+    # WebEngine 官方要求在创建 QApplication 前设置，能减少多窗口/嵌入场景的图形问题。
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
 
     app = QApplication(sys.argv)
 

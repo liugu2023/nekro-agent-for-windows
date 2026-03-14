@@ -46,6 +46,9 @@ class HyperVBackend(BackendBase):
             private_key=self.config.get("hyperv_ssh_key_path") or None,
         )
 
+    def _emit_pull_progress(self, phase, message):
+        self.progress_updated.emit(f"__pull_progress__|{phase}|{message}")
+
     def check_environment(self):
         cache_dir = self._runtime_cache_dir()
         image_path = os.path.join(cache_dir, "ubuntu-hyperv.vhdx")
@@ -308,19 +311,27 @@ class HyperVBackend(BackendBase):
                     env_content = self._guest_exec(f"cat {deploy_dir}/.env", timeout=20)
 
                 self.log_received.emit("[Hyper-V] 拉取 Docker 镜像...", "info")
+                self._emit_pull_progress("start", "准备拉取 Nekro Agent 镜像")
                 if not self._stream_guest_command(
                     f"cd {deploy_dir} && docker compose -f docker-compose.yml --env-file .env pull",
                     prefix="[镜像拉取]",
+                    progress_prefix="拉取中",
                 ):
+                    self._emit_pull_progress("error", "Nekro Agent 镜像拉取失败")
                     self.status_changed.emit("启动失败")
                     return
+                self._emit_pull_progress("stage", "Nekro Agent 镜像拉取完成")
 
+                self._emit_pull_progress("stage", "准备拉取沙盒镜像")
                 if not self._stream_guest_command(
                     "docker pull kromiose/nekro-agent-sandbox",
                     prefix="[沙盒镜像]",
+                    progress_prefix="拉取中",
                 ):
+                    self._emit_pull_progress("error", "沙盒镜像拉取失败")
                     self.status_changed.emit("启动失败")
                     return
+                self._emit_pull_progress("done", "镜像拉取完成")
 
                 self.log_received.emit("[Hyper-V] 启动 Compose 服务...", "info")
                 code, stdout, stderr = self.transport.exec(
@@ -379,16 +390,22 @@ class HyperVBackend(BackendBase):
                 if not self._stream_guest_command(
                     f"cd {deploy_dir} && docker compose -f docker-compose.yml pull nekro_agent",
                     prefix="[镜像拉取]",
+                    progress_prefix="拉取中",
                 ):
+                    self._emit_pull_progress("error", "Nekro Agent 镜像更新失败")
                     self.status_changed.emit("更新失败")
                     return
 
+                self._emit_pull_progress("stage", "准备更新沙盒镜像")
                 if not self._stream_guest_command(
                     "docker pull kromiose/nekro-agent-sandbox",
                     prefix="[沙盒镜像]",
+                    progress_prefix="拉取中",
                 ):
+                    self._emit_pull_progress("error", "沙盒镜像更新失败")
                     self.status_changed.emit("更新失败")
                     return
+                self._emit_pull_progress("done", "镜像更新完成")
 
                 code, stdout, stderr = self.transport.exec(
                     f"cd {deploy_dir} && docker compose -f docker-compose.yml --env-file .env up -d",
@@ -720,7 +737,7 @@ ethernets:
         self.log_received.emit(f"[Hyper-V] ✓ {desc}", "info")
         return True
 
-    def _stream_guest_command(self, command, prefix="", timeout=600):
+    def _stream_guest_command(self, command, prefix="", timeout=600, progress_prefix=""):
         args = [
             "ssh",
             *self.transport._base_args(),
@@ -742,7 +759,11 @@ ethernets:
                     break
                 line = proc.stdout.readline()
                 if line:
-                    self.log_received.emit(f"{prefix} {line.strip()}".strip(), "info")
+                    clean_line = line.strip()
+                    if progress_prefix:
+                        self._emit_pull_progress("update", clean_line)
+                    else:
+                        self.log_received.emit(f"{prefix} {clean_line}".strip(), "info")
                 if proc.poll() is not None:
                     break
                 if time.time() - started > timeout:

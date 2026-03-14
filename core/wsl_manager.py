@@ -75,6 +75,9 @@ class WSLManager(BackendBase):
             except Exception:
                 pass
 
+    def _emit_pull_progress(self, phase, message):
+        self.progress_updated.emit(f"__pull_progress__|{phase}|{message}")
+
     # ------------------------------------------------------------------ #
     #  环境检测
     # ------------------------------------------------------------------ #
@@ -659,7 +662,7 @@ default = root
                 # 首次部署时拉取镜像，后续启动跳过
                 if env_exists != "yes":
                     self.log_received.emit("拉取 Docker 镜像（可能需要较长时间）...", "info")
-                    self.progress_updated.emit("拉取 Docker 镜像...")
+                    self._emit_pull_progress("start", "准备拉取 Nekro Agent 镜像")
                     pull_proc = subprocess.Popen(
                         ["wsl", "-d", distro, "--", "bash", "-c",
                          f"cd {deploy_dir} && docker compose -f docker-compose.yml --env-file .env pull 2>&1"],
@@ -674,16 +677,19 @@ default = root
                             text = self._safe_decode(line).strip()
                             # 过滤 WSL 系统警告（UTF-16 乱码）
                             if text and not self._is_wsl_noise(text):
-                                self.log_received.emit(f"[镜像拉取] {text}", "info")
+                                self._emit_pull_progress("update", text)
                     pull_proc.wait()
                     if pull_proc.returncode != 0:
+                        self._emit_pull_progress("error", "Nekro Agent 镜像拉取失败")
                         self.log_received.emit("镜像拉取失败", "error")
                         self.status_changed.emit("启动失败")
                         return
+                    self._emit_pull_progress("stage", "Nekro Agent 镜像拉取完成")
                     self.log_received.emit("✓ 镜像拉取完成", "info")
 
                     # 拉取沙盒镜像
                     self.log_received.emit("拉取沙盒镜像...", "info")
+                    self._emit_pull_progress("stage", "准备拉取沙盒镜像")
                     sandbox_proc = subprocess.Popen(
                         ["wsl", "-d", distro, "--", "docker", "pull", "kromiose/nekro-agent-sandbox"],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -696,12 +702,14 @@ default = root
                         if line:
                             text = self._safe_decode(line).strip()
                             if text and not self._is_wsl_noise(text):
-                                self.log_received.emit(f"[沙盒镜像] {text}", "info")
+                                self._emit_pull_progress("update", text)
                     sandbox_proc.wait()
                     if sandbox_proc.returncode != 0:
+                        self._emit_pull_progress("error", "沙盒镜像拉取失败")
                         self.log_received.emit("沙盒镜像拉取失败", "error")
                         self.status_changed.emit("启动失败")
                         return
+                    self._emit_pull_progress("done", "镜像拉取完成")
                     self.log_received.emit("✓ 沙盒镜像拉取完成", "info")
 
                 # docker compose up -d
@@ -804,6 +812,7 @@ default = root
                 # 拉取最新镜像（只更新 nekroagent 和 sandbox）
                 self.log_received.emit("拉取 NekroAgent 镜像...", "info")
                 self.status_changed.emit("更新中...")
+                self._emit_pull_progress("start", "准备更新 Nekro Agent 镜像")
                 pull_proc = subprocess.Popen(
                     ["wsl", "-d", distro, "--", "bash", "-c",
                      f"cd {deploy_dir} && docker compose -f docker-compose.yml pull nekro_agent 2>&1"],
@@ -817,24 +826,37 @@ default = root
                     if line:
                         text = self._safe_decode(line).strip()
                         if text and not self._is_wsl_noise(text):
-                            self.log_received.emit(f"[镜像拉取] {text}", "info")
+                            self._emit_pull_progress("update", text)
                 pull_proc.wait()
                 if pull_proc.returncode != 0:
+                    self._emit_pull_progress("error", "Nekro Agent 镜像更新失败")
                     self.log_received.emit("NekroAgent 镜像拉取失败", "error")
                     self.status_changed.emit("更新失败")
                     return
 
                 # 拉取沙盒镜像
                 self.log_received.emit("拉取沙盒镜像...", "info")
-                sandbox_proc = subprocess.run(
+                self._emit_pull_progress("stage", "准备更新沙盒镜像")
+                sandbox_proc = subprocess.Popen(
                     ["wsl", "-d", distro, "--", "docker", "pull", "kromiose/nekro-agent-sandbox"],
-                    capture_output=True, timeout=300,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     creationflags=self._creation_flags(),
                 )
+                while True:
+                    line = sandbox_proc.stdout.readline()
+                    if not line and sandbox_proc.poll() is not None:
+                        break
+                    if line:
+                        text = self._safe_decode(line).strip()
+                        if text and not self._is_wsl_noise(text):
+                            self._emit_pull_progress("update", text)
+                sandbox_proc.wait()
                 if sandbox_proc.returncode != 0:
+                    self._emit_pull_progress("error", "沙盒镜像更新失败")
                     self.log_received.emit("沙盒镜像拉取失败", "error")
                     self.status_changed.emit("更新失败")
                     return
+                self._emit_pull_progress("done", "镜像更新完成")
                 self.log_received.emit("✓ 镜像拉取完成", "info")
 
                 # 重启服务

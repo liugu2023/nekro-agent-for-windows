@@ -1,9 +1,11 @@
+import re
 import os
 import sys
 import webbrowser
+from collections import OrderedDict
 
-from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QCloseEvent, QIcon, QPixmap
+from PyQt6.QtCore import QTimer, Qt, QUrl
+from PyQt6.QtGui import QCloseEvent, QColor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -25,6 +27,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from core.backend_factory import BackendFactory
 from core.config_manager import ConfigManager
@@ -52,6 +55,16 @@ class MainWindow(QMainWindow):
         self.backend = BackendFactory.create(self.config)
         self._quit_after_stop = False
         self._responsive_buttons = []
+        self._last_status = ""
+        self._uninstall_in_progress = False
+        self._pull_layers = OrderedDict()
+        self._pull_events = []
+        self._pull_header = ""
+        self.browser_urls = {
+            "nekro": "http://localhost:8021",
+            "napcat": "http://localhost:6099",
+        }
+        self.current_browser_target = "nekro"
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -73,6 +86,7 @@ class MainWindow(QMainWindow):
         self.switch_tab(0)
 
         self.backend.log_received.connect(self.append_log)
+        self.backend.progress_updated.connect(self._on_backend_progress)
         self.backend.status_changed.connect(self.update_status_ui)
         self.backend.deploy_info_ready.connect(self._show_credentials_dialog)
 
@@ -311,7 +325,10 @@ class MainWindow(QMainWindow):
     def append_log(self, msg, level="info"):
         if level == "debug" and not getattr(self, "debug_mode", False):
             return
+        if msg.startswith("[镜像拉取]") or msg.startswith("[沙盒镜像]"):
+            return
 
+        original_level = level
         color = {
             "error": "#f26f82",
             "warning": "#f2c15f",
@@ -339,7 +356,10 @@ class MainWindow(QMainWindow):
                 self.log_preview.append(f"<span style='color:{color};'>[{level.upper()}] {msg}</span>")
 
         try:
-            print(f"[{level.upper()}] {msg}")
+            if original_level == "vm":
+                print(msg)
+            else:
+                print(f"[{level.upper()}] {msg}")
         except Exception:
             pass
 
@@ -351,12 +371,126 @@ class MainWindow(QMainWindow):
         for current, button in enumerate(buttons):
             button.setChecked(current == index)
 
+    def _set_pull_view_visible(self, visible):
+        if hasattr(self, "pull_view_frame"):
+            self.pull_view_frame.setVisible(visible)
+
+    def _render_pull_view(self):
+        if not hasattr(self, "pull_viewer"):
+            return
+        lines = []
+        if self._pull_header:
+            lines.append(self._pull_header)
+            lines.append("")
+        for event in self._pull_events[-4:]:
+            lines.append(event)
+        if self._pull_events:
+            lines.append("")
+        for layer, status in self._pull_layers.items():
+            lines.append(f"{layer}: {status}")
+        self.pull_viewer.setPlainText("\n".join(lines).strip())
+        self.pull_viewer.verticalScrollBar().setValue(self.pull_viewer.verticalScrollBar().maximum())
+
+    def _update_pull_view(self, header="", detail=""):
+        if not hasattr(self, "pull_viewer"):
+            return
+        if header:
+            self._pull_header = header
+            self.pull_status_label.setText(header)
+        if detail:
+            layer_match = re.match(r"^([a-f0-9]{6,64}):\s*(.+)$", detail, re.IGNORECASE)
+            if layer_match:
+                layer_id, status = layer_match.groups()
+                self._pull_layers[layer_id] = status
+            else:
+                self._pull_events.append(detail)
+                self._pull_events = self._pull_events[-12:]
+        self._set_pull_view_visible(True)
+        self._render_pull_view()
+
+    def _clear_pull_progress(self):
+        if not hasattr(self, "pull_viewer"):
+            return
+        self._pull_layers.clear()
+        self._pull_events.clear()
+        self._pull_header = ""
+        self.pull_status_label.setText("")
+        self.pull_viewer.clear()
+        self._set_pull_view_visible(False)
+
+    def _on_backend_progress(self, text):
+        if text.startswith("__pull_progress__|"):
+            _, phase, message = text.split("|", 2)
+            if phase == "start":
+                self._clear_pull_progress()
+                self._update_pull_view(message)
+            elif phase == "update":
+                self._update_pull_view(detail=message)
+            elif phase == "stage":
+                self._update_pull_view(message, message)
+            elif phase == "done":
+                self._update_pull_view(message, f"Status: {message}")
+                QTimer.singleShot(1200, self._clear_pull_progress)
+            elif phase == "error":
+                self._update_pull_view(message, f"Error: {message}")
+            return
+
+        if text in {"启动 Compose 服务...", "拉取 Docker 镜像..."}:
+            self._update_pull_view(text)
+            return
+        if text in {"__docker_done__", "__docker_fail__"}:
+            self._clear_pull_progress()
+            return
+
     def _format_mode_text(self, mode):
         if mode == "napcat":
             return "完整版 (napcat)"
         if mode == "lite":
             return "精简版 (lite)"
         return "未选择"
+
+    def _target_label(self, target):
+        return "NapCat" if target == "napcat" else "Nekro Agent"
+
+    def _target_url(self, target=None):
+        return self.browser_urls.get(target or self.current_browser_target, self.browser_urls["nekro"])
+
+    def _can_access_target(self, target):
+        return target == "nekro" or self.config.get("deploy_mode") == "napcat"
+
+    def _set_browser_target(self, target, force_reload=False):
+        if not self._can_access_target(target):
+            self._show_notice_dialog("提示", "当前部署模式未启用 NapCat。")
+            return
+
+        self.current_browser_target = target
+        self.btn_browser_nekro.setChecked(target == "nekro")
+        self.btn_browser_napcat.setChecked(target == "napcat")
+        self.btn_browser_napcat.setVisible(self.config.get("deploy_mode") == "napcat")
+
+        target_name = self._target_label(target)
+        target_url = self._target_url(target)
+        self.browser_url_label.setText(f"当前地址: {target_url}")
+        self.browser_hint.setText(f"内置 WebView 访问 {target_name} 管理界面；服务未就绪时可点击刷新重试。")
+
+        if getattr(self.backend, "is_running", False):
+            current_url = self.webview.url().toString()
+            if force_reload or current_url != target_url:
+                self.webview.setUrl(QUrl(target_url))
+            else:
+                self.webview.reload()
+        else:
+            placeholder = (
+                f"{target_name} 服务尚未启动。<br><br>"
+                "先在“总览控制台”完成部署，然后回到这里点击“刷新内嵌页面”。"
+            )
+            self.webview.setHtml(f"<html><body style='font-family:Segoe UI;padding:24px;color:#243649;'>{placeholder}</body></html>")
+
+    def _reload_browser_view(self):
+        self._set_browser_target(self.current_browser_target, force_reload=True)
+
+    def _open_current_in_browser(self):
+        webbrowser.open(self._target_url())
 
     def refresh_dashboard(self):
         if not hasattr(self, "status_badge"):
@@ -399,9 +533,12 @@ class MainWindow(QMainWindow):
         self.backend.start_services(deploy_mode)
 
     def update_status_ui(self, status):
+        previous_status = self._last_status
+        self._last_status = status
         self.status_badge.setText(f"状态: {status}")
 
         running = status == "运行中"
+        was_running = previous_status == "运行中"
         self.metric_status.findChild(QLabel, "MetricValue").setText(status)
         self.metric_status.findChild(QLabel, "MetricHint").setText("服务可访问" if running else "等待部署或启动")
         self.metric_status.setProperty("accent", "green" if running else "red")
@@ -421,15 +558,32 @@ class MainWindow(QMainWindow):
                     message += "\nNapCat: http://localhost:6099"
                 self._show_notice_dialog("服务已启动", message)
                 self._is_first_deploy = False
-            webbrowser.open("http://localhost:8021")
+            if hasattr(self, "webview") and not was_running:
+                self.switch_tab(1)
+                self._set_browser_target(self.current_browser_target, force_reload=True)
+            self._clear_pull_progress()
         else:
             self.btn_primary_deploy.setText("开始部署")
             if self._quit_after_stop and status in {"已停止", "已卸载"}:
                 self._quit_after_stop = False
                 QApplication.quit()
+            if hasattr(self, "webview") and was_running:
+                self._set_browser_target(self.current_browser_target, force_reload=False)
+            if status in {"启动失败", "更新失败", "启动超时", "已停止", "已卸载"}:
+                self._clear_pull_progress()
 
-        if hasattr(self, "btn_napcat"):
-            self.btn_napcat.setVisible(running and self.config.get("deploy_mode") == "napcat")
+        if status == "已卸载":
+            self.refresh_dashboard()
+            if self._uninstall_in_progress:
+                self._uninstall_in_progress = False
+                self._show_notice_dialog("卸载完成", "运行环境已卸载完成。")
+
+        if hasattr(self, "btn_browser_napcat"):
+            self.btn_browser_napcat.setVisible(self.config.get("deploy_mode") == "napcat")
+        if hasattr(self, "browser_open_external_btn"):
+            self.browser_open_external_btn.setEnabled(running)
+        if hasattr(self, "browser_reload_btn"):
+            self.browser_reload_btn.setEnabled(True)
 
     def init_home_page(self):
         page = QWidget()
@@ -555,21 +709,55 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(34, 30, 34, 30)
         layout.setSpacing(18)
 
-        card = SectionCard("服务访问", "在系统默认浏览器中打开管理界面，建议首次成功部署后加入收藏。")
+        card = SectionCard("服务访问", "在应用内直接访问管理界面，仍可按需切换到系统浏览器。")
         card_layout = card.body_layout()
 
-        btn_na = ActionButton("WEB", "打开 Nekro Agent 管理界面", "地址: http://localhost:8021", "primary")
-        btn_na.clicked.connect(lambda: webbrowser.open("http://localhost:8021"))
-        card_layout.addWidget(btn_na)
+        target_row = QHBoxLayout()
+        self.btn_browser_nekro = QPushButton("Nekro Agent")
+        self.btn_browser_nekro.setObjectName("SegmentBtn")
+        self.btn_browser_nekro.setCheckable(True)
+        self.btn_browser_nekro.clicked.connect(lambda: self._set_browser_target("nekro"))
+        target_row.addWidget(self.btn_browser_nekro)
 
-        self.btn_napcat = ActionButton("BOT", "打开 NapCat 管理界面", "地址: http://localhost:6099")
-        self.btn_napcat.clicked.connect(lambda: webbrowser.open("http://localhost:6099"))
-        self.btn_napcat.setVisible(self.config.get("deploy_mode") == "napcat")
-        card_layout.addWidget(self.btn_napcat)
+        self.btn_browser_napcat = QPushButton("NapCat")
+        self.btn_browser_napcat.setObjectName("SegmentBtn")
+        self.btn_browser_napcat.setCheckable(True)
+        self.btn_browser_napcat.clicked.connect(lambda: self._set_browser_target("napcat"))
+        self.btn_browser_napcat.setVisible(self.config.get("deploy_mode") == "napcat")
+        target_row.addWidget(self.btn_browser_napcat)
+        target_row.addStretch()
+        card_layout.addLayout(target_row)
+
+        toolbar = QHBoxLayout()
+        self.browser_url_label = QLabel()
+        self.browser_url_label.setObjectName("SectionDesc")
+        toolbar.addWidget(self.browser_url_label, 1)
+
+        self.browser_reload_btn = QPushButton("刷新内嵌页面")
+        self.browser_reload_btn.clicked.connect(self._reload_browser_view)
+        toolbar.addWidget(self.browser_reload_btn)
+
+        self.browser_open_external_btn = QPushButton("在系统浏览器打开")
+        self.browser_open_external_btn.clicked.connect(self._open_current_in_browser)
+        toolbar.addWidget(self.browser_open_external_btn)
+        card_layout.addLayout(toolbar)
+
+        self.browser_hint = QLabel()
+        self.browser_hint.setObjectName("SectionDesc")
+        self.browser_hint.setWordWrap(True)
+        card_layout.addWidget(self.browser_hint)
+
+        self.webview = QWebEngineView()
+        self.webview.setMinimumHeight(560)
+        self.webview.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.webview.setAutoFillBackground(True)
+        self.webview.setStyleSheet("background: #f4f7fb; border: 1px solid #dfe7ef; border-radius: 8px;")
+        self.webview.page().setBackgroundColor(QColor("#f4f7fb"))
+        card_layout.addWidget(self.webview)
 
         layout.addWidget(card)
         layout.addStretch()
-        self._register_responsive_buttons(btn_na, self.btn_napcat)
+        self._set_browser_target("nekro")
         self._add_page(page)
 
     def init_logs_page(self):
@@ -580,6 +768,26 @@ class MainWindow(QMainWindow):
 
         card = SectionCard("日志中心", "按来源查看应用日志和容器日志，用于部署排查与运行观察。")
         card_layout = card.body_layout()
+
+        self.pull_view_frame = QFrame()
+        self.pull_view_frame.setObjectName("SectionCard")
+        pull_view_layout = QVBoxLayout(self.pull_view_frame)
+        pull_view_layout.setContentsMargins(16, 14, 16, 14)
+        pull_view_layout.setSpacing(8)
+
+        self.pull_status_label = QLabel("")
+        self.pull_status_label.setObjectName("SectionDesc")
+        self.pull_status_label.setWordWrap(True)
+        pull_view_layout.addWidget(self.pull_status_label)
+
+        self.pull_viewer = QTextEdit()
+        self.pull_viewer.setObjectName("LogViewer")
+        self.pull_viewer.setReadOnly(True)
+        self.pull_viewer.setMinimumHeight(180)
+        pull_view_layout.addWidget(self.pull_viewer)
+
+        self.pull_view_frame.setVisible(False)
+        card_layout.addWidget(self.pull_view_frame)
 
         top = QHBoxLayout()
         self.btn_log_app = QPushButton("应用日志")
@@ -725,6 +933,7 @@ class MainWindow(QMainWindow):
         if not reply:
             return
 
+        self._uninstall_in_progress = True
         self.switch_tab(2)
         self.log_viewer_app.append("<span style='color:#7ce0a3;'>[INFO]</span> 开始卸载环境...")
         self.backend.uninstall_environment()
