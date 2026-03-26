@@ -32,6 +32,11 @@ jobs:
       run: |
         choco install innosetup -y
 
+    - name: Copy Chinese language file
+      run: |
+        Copy-Item -Path "ChineseSimplified.isl" -Destination "C:\Program Files (x86)\Inno Setup 6\Languages\" -Force
+      shell: pwsh
+
     - name: Build installer
       run: |
         & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
