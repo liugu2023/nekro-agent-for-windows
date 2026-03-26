@@ -16,7 +16,7 @@ OutputBaseFilename=NekroAgent-Setup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ; 支持覆盖安装/升级
 UsePreviousAppDir=yes
