@@ -802,10 +802,12 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.browser_url_label, 1)
 
         self.browser_reload_btn = QPushButton("刷新内嵌页面")
+        self.browser_reload_btn.setObjectName("SegmentBtn")
         self.browser_reload_btn.clicked.connect(self._reload_browser_view)
         toolbar.addWidget(self.browser_reload_btn)
 
         self.browser_open_external_btn = QPushButton("在系统浏览器打开")
+        self.browser_open_external_btn.setObjectName("SegmentBtn")
         self.browser_open_external_btn.clicked.connect(self._open_current_in_browser)
         toolbar.addWidget(self.browser_open_external_btn)
         card_layout.addLayout(toolbar)

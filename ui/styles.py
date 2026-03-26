@@ -303,24 +303,25 @@ QLabel[role="info_block"] {
 
 QPushButton#SegmentBtn {
     min-height: 34px;
-    background: #ffffff;
-    border: 1px solid #dfe7ef;
+    background: transparent;
+    border: 1px solid transparent;
     border-radius: 8px;
-    color: #70879b;
+    color: #7d8fa0;
     font-size: 13px;
     font-weight: 600;
     padding: 0 14px;
 }
 
 QPushButton#SegmentBtn:hover {
-    border-color: #8fc5dd;
-    color: #274055;
+    background: rgba(255, 255, 255, 0.6);
+    border-color: #f1d0c9;
+    color: #3d5366;
 }
 
 QPushButton#SegmentBtn:checked {
-    background: #fff0ed;
-    border-color: #f1cfc8;
-    color: #c46b62;
+    background: #ffe8e3;
+    border-color: #f1c4bc;
+    color: #bf655d;
 }
 
 QTextEdit#LogViewer {
