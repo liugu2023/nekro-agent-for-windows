@@ -938,6 +938,14 @@ class MainWindow(QMainWindow):
                 self.config.set("napcat_port", napcat_port)
                 self.browser_urls["nekro"] = f"http://localhost:{nekro_port}"
                 self.browser_urls["napcat"] = f"http://localhost:{napcat_port}"
+                # 同步更新已保存的 deploy_info 里的端口，避免凭据弹窗显示旧端口
+                deploy_info = self.config.get("deploy_info")
+                if deploy_info:
+                    deploy_info["port"] = str(nekro_port)
+                    deploy_info["napcat_port"] = str(napcat_port)
+                    self.config.set("deploy_info", deploy_info)
+                # 刷新内置浏览器当前页地址栏和 WebView
+                self._set_browser_target(self.current_browser_target, force_reload=False)
         except ValueError:
             pass
 

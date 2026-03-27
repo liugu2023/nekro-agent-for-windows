@@ -343,7 +343,8 @@ QComboBox {
     min-height: 22px;
     color: #264057;
     font-size: 13px;
-    selection-background-color: transparent;
+    selection-background-color: #c8e6f5;
+    selection-color: #183247;
 }
 
 QLineEdit:focus,
