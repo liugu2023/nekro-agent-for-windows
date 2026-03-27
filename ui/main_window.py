@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
         self._last_status = ""
         self._uninstall_in_progress = False
         self._pull_layers = OrderedDict()
+        self._pull_layer_order = []  # 保持 docker pull 输出的原始顺序
         self._pull_events = []
         self._pull_header = ""
         self.browser_urls = {
@@ -347,48 +348,53 @@ class MainWindow(QMainWindow):
         if hasattr(self, "pull_view_frame"):
             self.pull_view_frame.setVisible(visible)
 
-    # layer 状态排序优先级：进行中的在上面，已完成的沉底
-    _LAYER_STATUS_ORDER = {
-        "Waiting":          0,
-        "Pulling fs layer": 1,
-        "Downloading":      2,
-        "Verifying":        3,
-        "Extracting":       4,
-        "Download complete": 5,
-        "Pull complete":    6,
-        "Already exists":   7,
+    # layer 状态对应颜色
+    _LAYER_STATUS_COLOR = {
+        "Waiting":           "#57606a",
+        "Pulling fs layer":  "#57606a",
+        "Downloading":       "#58a6ff",
+        "Verifying":         "#d2a679",
+        "Extracting":        "#e3b341",
+        "Download complete": "#3fb950",
+        "Pull complete":     "#3fb950",
+        "Already exists":   "#8b949e",
     }
 
-    def _layer_sort_key(self, item):
-        """按状态优先级排序 layer，未知状态排在中间"""
-        _layer_id, status = item
-        # 状态文本可能带进度条，只取第一个单词或已知前缀匹配
-        for key, order in self._LAYER_STATUS_ORDER.items():
+    def _layer_color(self, status):
+        for key, color in self._LAYER_STATUS_COLOR.items():
             if status.startswith(key):
-                return order
-        return 3  # 未知状态排中间
+                return color
+        return "#cccccc"
 
     def _render_pull_view(self):
         if not hasattr(self, "pull_viewer"):
             return
-        lines = []
+        parts = []
         if self._pull_header:
-            lines.append(self._pull_header)
-            lines.append("")
+            parts.append(f"<span style='color:#8b949e;'>{self._pull_header}</span><br>")
 
-        # 按状态分组排序：进行中在上，已完成在下
-        sorted_layers = sorted(self._pull_layers.items(), key=self._layer_sort_key)
-        for layer_id, status in sorted_layers:
-            lines.append(f"{layer_id:<14s}{status}")
+        for layer_id in self._pull_layer_order:
+            status = self._pull_layers.get(layer_id, "")
+            color = self._layer_color(status)
+            # 截断 ASCII 进度条中多余空格
+            display_status = re.sub(r'\s{2,}', ' ', status)
+            parts.append(
+                f"<span style='color:#8b949e;font-family:monospace'>{layer_id}</span>"
+                f"<span style='color:#444;'> &nbsp;</span>"
+                f"<span style='color:{color};'>{display_status}</span><br>"
+            )
 
-        # 底部汇总信息（Digest / Status 等）
         if self._pull_events:
             if self._pull_layers:
-                lines.append("")
+                parts.append("<br>")
             for event in self._pull_events[-6:]:
-                lines.append(event)
+                color = "#3fb950" if event.startswith("✓") else ("#f26f82" if event.startswith("✗") else "#8b949e")
+                parts.append(f"<span style='color:{color};'>{event}</span><br>")
 
-        self.pull_viewer.setPlainText("\n".join(lines).strip())
+        self.pull_viewer.setHtml(
+            "<div style='font-family: Cascadia Mono, Consolas, Courier New, Microsoft YaHei UI, monospace; "
+            "font-size: 12px; line-height: 1.6;'>" + "".join(parts) + "</div>"
+        )
         self.pull_viewer.verticalScrollBar().setValue(self.pull_viewer.verticalScrollBar().maximum())
 
     def _update_pull_view(self, header="", detail=""):
@@ -403,6 +409,8 @@ class MainWindow(QMainWindow):
             if layer_match:
                 layer_id, status = layer_match.groups()
                 short_id = layer_id[:12]
+                if short_id not in self._pull_layers:
+                    self._pull_layer_order.append(short_id)
                 self._pull_layers[short_id] = status
             else:
                 self._pull_events.append(detail)
@@ -414,6 +422,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "pull_viewer"):
             return
         self._pull_layers.clear()
+        self._pull_layer_order.clear()
         self._pull_events.clear()
         self._pull_header = ""
         self.pull_status_label.setText("")
@@ -801,9 +810,9 @@ class MainWindow(QMainWindow):
         self.pull_viewer.setReadOnly(True)
         self.pull_viewer.setMinimumHeight(200)
         self.pull_viewer.setStyleSheet(
-            "QTextEdit { font-family: 'Cascadia Mono', 'Consolas', 'Courier New', monospace; "
-            "font-size: 12px; background: #1e1e1e; color: #cccccc; "
-            "border: 1px solid #333; border-radius: 6px; padding: 10px; }"
+            "QTextEdit { font-family: 'Cascadia Mono', 'Consolas', 'Courier New', 'Microsoft YaHei UI', monospace; "
+            "font-size: 12px; background: #0f2032; color: #dfeaf6; "
+            "border: 1px solid #20384f; border-radius: 8px; padding: 14px; }"
         )
         pull_view_layout.addWidget(self.pull_viewer)
 

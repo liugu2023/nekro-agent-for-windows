@@ -330,7 +330,7 @@ QTextEdit#LogViewer {
     border: 1px solid #20384f;
     border-radius: 8px;
     padding: 16px;
-    font-family: Consolas, "Courier New";
+    font-family: "Cascadia Mono", Consolas, "Courier New", "Microsoft YaHei UI";
     font-size: 13px;
 }
 
