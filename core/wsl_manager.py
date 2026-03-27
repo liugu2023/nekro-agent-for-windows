@@ -298,18 +298,20 @@ class WSLManager(BackendBase):
         if isinstance(data, str):
             return data
         if isinstance(data, bytes):
-            # 检测 UTF-16-LE：特征是奇数字节位置有大量 0x00
-            # wsl 命令输出通常是 UTF-16-LE
+            # 优先检测 BOM（wsl 带 BOM 的 UTF-16 输出）
+            if data.startswith((b'\xff\xfe', b'\xfe\xff')):
+                try:
+                    return data.decode('utf-16')
+                except Exception:
+                    pass
+
+            # 检测无 BOM 的 UTF-16-LE：特征是奇数字节位置有大量 0x00
             if len(data) >= 4:
-                # 统计 0x00 字节在奇数位置的比例
                 null_at_odd = sum(1 for i in range(1, len(data), 2) if data[i] == 0)
                 total_odd = (len(data) + 1) // 2
-                # 如果超过 70% 的奇数位置都是 0x00，很可能是 UTF-16-LE
                 if total_odd > 0 and null_at_odd / total_odd > 0.7:
                     try:
-                        result = data.decode('utf-16-le')
-                        # 验证解码是否成功（没有太多乱字符）
-                        return result
+                        return data.decode('utf-16-le')
                     except Exception:
                         pass
 
@@ -326,7 +328,20 @@ class WSLManager(BackendBase):
 
     def _is_wsl_noise(self, text):
         """判断是否为 WSL 系统噪音（如 hostname 解析警告的 UTF-16 乱码）"""
-        if text.startswith("wsl:"):
+        # strip null bytes / BOM that may survive decoding
+        stripped = text.strip().lstrip('\ufeff\x00')
+        if stripped.startswith("wsl:"):
+            return True
+        # known WSL warning substrings
+        _WSL_NOISE_PATTERNS = (
+            "localhost 代理配置",
+            "localhost proxy",
+            "NAT 模式下的 WSL",
+            "NAT mode",
+            "未镜像到 WSL",
+        )
+        lower = stripped.lower()
+        if any(p.lower() in lower for p in _WSL_NOISE_PATTERNS):
             return True
         # 非 ASCII 字符占比超过 30% 则认为是乱码
         non_ascii = sum(1 for c in text if ord(c) > 127)
