@@ -1,4 +1,7 @@
-; Inno Setup 安装脚本
+; =========================
+; Nekro-Agent 稳定安装脚本（工业级）
+; =========================
+
 #define MyAppName "Nekro-Agent"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Nekro-Agent Team"
@@ -16,15 +19,21 @@ OutputBaseFilename=NekroAgent-Setup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=dialog
-UninstallDisplayIcon={app}\{#MyAppExeName}
-; 支持覆盖安装/升级
-UsePreviousAppDir=no
+UsePreviousAppDir=yes
 CloseApplications=yes
 RestartApplications=yes
-ArchitecturesInstallIn64BitMode=x64compatible
-ArchitecturesAllowed=x64compatible
+UninstallDisplayIcon={app}\{#MyAppExeName}
+
+; ✅ 文件详细信息版本号
+VersionInfoVersion={#MyAppVersion}
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription={#MyAppName} Installer
+VersionInfoProductName={#MyAppName}
+VersionInfoCopyright=Copyright (C) 2024 {#MyAppPublisher}
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
@@ -33,17 +42,47 @@ Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.i
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加图标:"
 
 [Files]
-Source: "dist\NekroAgent\NekroAgent.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\NekroAgent\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs uninsnosharedfileprompt
-
-[UninstallDelete]
-Type: filesandordirs; Name: "{app}\_internal"
-Type: filesandordirs; Name: "{app}"
+Source: "dist\NekroAgent\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\NekroAgent\_internal\*"; DestDir: "{app}\_internal"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs uninsnosharedfileprompt
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}";          Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\卸载 {#MyAppName}";     Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#MyAppName}";    Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; \
+    Flags: nowait postinstall skipifsilent
+
+; =========================
+; ✅ 卸载逻辑全部在 [Code] 中处理，彻底规避 PathRedir Bug
+; =========================
+[Code]
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+  InternalDir: String;
+begin
+  { ─── 卸载前：强制杀进程 ─── }
+  if CurUninstallStep = usUninstall then
+  begin
+    Exec(
+      ExpandConstant('{sys}\taskkill.exe'),
+      '/F /IM {#MyAppExeName}',
+      '',
+      SW_HIDE,
+      ewWaitUntilTerminated,
+      ResultCode
+    );
+    { ResultCode 不判断，进程不存在时 taskkill 返回非零但无需报错 }
+  end;
+
+  { ─── 卸载后：清理 _internal 目录 ─── }
+  if CurUninstallStep = usPostUninstall then
+  begin
+    InternalDir := ExpandConstant('{app}\_internal');
+    if DirExists(InternalDir) then
+      DelTree(InternalDir, True, True, True);
+  end;
+end;
