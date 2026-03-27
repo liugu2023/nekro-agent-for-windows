@@ -33,7 +33,7 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 from core.backend_factory import BackendFactory
 from core.config_manager import ConfigManager
 from ui.styles import STYLESHEET
-from ui.widgets import ActionButton, MetricCard, SectionCard
+from ui.widgets import ActionButton, MetricCard, SectionCard, show_notice_dialog
 
 
 def get_resource_path(relative_path):
@@ -195,46 +195,7 @@ class MainWindow(QMainWindow):
         self.tray_icon.activated.connect(self._on_tray_activated)
 
     def _show_notice_dialog(self, title, text, button_text="确定", danger=False):
-        dialog = QDialog(self)
-        dialog.setWindowTitle(title)
-        dialog.setMinimumWidth(340)
-        dialog.setMaximumWidth(440)
-        dialog.setModal(True)
-        dialog.setStyleSheet(STYLESHEET)
-
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(12)
-
-        title_label = QLabel(title)
-        title_label.setProperty("role", "dialog_title")
-        title_label.setWordWrap(True)
-        title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        layout.addWidget(title_label)
-
-        desc_label = QLabel(text)
-        desc_label.setProperty("role", "dialog_desc")
-        desc_label.setWordWrap(True)
-        desc_label.setTextFormat(Qt.TextFormat.PlainText)
-        desc_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        layout.addWidget(desc_label)
-
-        button_row = QHBoxLayout()
-        button_row.addStretch()
-
-        confirm_button = QPushButton(button_text)
-        if danger:
-            confirm_button.setStyleSheet(
-                "QPushButton { min-height: 36px; background: #c94f63; color: white; "
-                "border: 1px solid #c94f63; border-radius: 10px; padding: 0 16px; font-size: 13px; font-weight: 600; }"
-                "QPushButton:hover { background: #b84558; border-color: #b84558; }"
-            )
-        confirm_button.clicked.connect(dialog.accept)
-        button_row.addWidget(confirm_button)
-
-        layout.addLayout(button_row)
-        dialog.adjustSize()
-        dialog.exec()
+        show_notice_dialog(self, title, text, button_text, danger)
 
     def _show_confirm_dialog(self, title, text, confirm_text="确认", cancel_text="取消", danger=False):
         dialog = QDialog(self)
@@ -270,18 +231,7 @@ class MainWindow(QMainWindow):
         button_row.addWidget(cancel_button)
 
         confirm_button = QPushButton(confirm_text)
-        if danger:
-            confirm_button.setStyleSheet(
-                "QPushButton { min-height: 36px; background: #c94f63; color: white; "
-                "border: 1px solid #c94f63; border-radius: 10px; padding: 0 16px; font-size: 13px; font-weight: 600; }"
-                "QPushButton:hover { background: #b84558; border-color: #b84558; }"
-            )
-        else:
-            confirm_button.setStyleSheet(
-                "QPushButton { min-height: 36px; background: #1b6db4; color: white; "
-                "border: 1px solid #1b6db4; border-radius: 10px; padding: 0 16px; font-size: 13px; font-weight: 600; }"
-                "QPushButton:hover { background: #185f9d; border-color: #185f9d; }"
-            )
+        confirm_button.setProperty("role", "danger" if danger else "primary")
         confirm_button.clicked.connect(dialog.accept)
         button_row.addWidget(confirm_button)
 
@@ -452,15 +402,9 @@ class MainWindow(QMainWindow):
             layer_match = re.match(r"^([a-f0-9]{6,64}):\s*(.+)$", detail, re.IGNORECASE)
             if layer_match:
                 layer_id, status = layer_match.groups()
-                # 截取短 ID（前12位），与原生 docker pull 保持一致
                 short_id = layer_id[:12]
                 self._pull_layers[short_id] = status
-            elif detail.startswith(("Pulling ", "Digest:", "Status:", "latest:", "Already exists")):
-                # docker pull 的汇总信息，放到 events
-                self._pull_events.append(detail)
-                self._pull_events = self._pull_events[-12:]
             else:
-                # 其他进度行也作为 event 显示
                 self._pull_events.append(detail)
                 self._pull_events = self._pull_events[-12:]
         self._set_pull_view_visible(True)
@@ -1083,53 +1027,52 @@ class MainWindow(QMainWindow):
         except Exception as error:
             self._show_notice_dialog("提示", f"无法打开目录，请确认服务已启动且目录已创建。\n\n路径: {win_path}\n错误: {error}", danger=True)
 
+    def _ask_close_action(self):
+        """返回 1=最小化到托盘, 2=停止并退出, 其他=取消"""
+        choice = QDialog(self)
+        choice.setWindowTitle("选择操作")
+        choice.setMinimumWidth(360)
+        choice.setMaximumWidth(460)
+        choice.setModal(True)
+        choice.setStyleSheet(STYLESHEET)
+
+        layout = QVBoxLayout(choice)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("服务正在运行")
+        title.setProperty("role", "dialog_title")
+        title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(title)
+
+        desc = QLabel("请选择关闭窗口时的处理方式。")
+        desc.setProperty("role", "dialog_desc")
+        desc.setWordWrap(True)
+        desc.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(desc)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
+        tray_button = QPushButton("最小化到托盘")
+        tray_button.clicked.connect(lambda: choice.done(1))
+        button_row.addWidget(tray_button)
+
+        quit_button = QPushButton("停止服务并退出")
+        quit_button.setProperty("role", "danger")
+        quit_button.clicked.connect(lambda: choice.done(2))
+        button_row.addWidget(quit_button)
+
+        cancel_button = QPushButton("取消")
+        cancel_button.clicked.connect(choice.reject)
+        button_row.addWidget(cancel_button)
+
+        layout.addLayout(button_row)
+        choice.adjustSize()
+        return choice.exec()
+
     def closeEvent(self, event: QCloseEvent):
         if self.backend.is_running:
-            choice = QDialog(self)
-            choice.setWindowTitle("选择操作")
-            choice.setMinimumWidth(360)
-            choice.setMaximumWidth(460)
-            choice.setModal(True)
-            choice.setStyleSheet(STYLESHEET)
-
-            layout = QVBoxLayout(choice)
-            layout.setContentsMargins(20, 18, 20, 18)
-            layout.setSpacing(12)
-
-            title = QLabel("服务正在运行")
-            title.setProperty("role", "dialog_title")
-            title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            layout.addWidget(title)
-
-            desc = QLabel("请选择关闭窗口时的处理方式。")
-            desc.setProperty("role", "dialog_desc")
-            desc.setWordWrap(True)
-            desc.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            layout.addWidget(desc)
-
-            button_row = QHBoxLayout()
-            button_row.setSpacing(10)
-            tray_button = QPushButton("最小化到托盘")
-            tray_button.clicked.connect(lambda: choice.done(1))
-            button_row.addWidget(tray_button)
-
-            quit_button = QPushButton("停止服务并退出")
-            quit_button.setStyleSheet(
-                "QPushButton { min-height: 36px; background: #c94f63; color: white; "
-                "border: 1px solid #c94f63; border-radius: 10px; padding: 0 16px; font-size: 13px; font-weight: 600; }"
-                "QPushButton:hover { background: #b84558; border-color: #b84558; }"
-            )
-            quit_button.clicked.connect(lambda: choice.done(2))
-            button_row.addWidget(quit_button)
-
-            cancel_button = QPushButton("取消")
-            cancel_button.clicked.connect(choice.reject)
-            button_row.addWidget(cancel_button)
-
-            layout.addLayout(button_row)
-            choice.adjustSize()
-
-            result = choice.exec()
+            result = self._ask_close_action()
             if result == 1:
                 self.hide()
                 self.tray_icon.show()

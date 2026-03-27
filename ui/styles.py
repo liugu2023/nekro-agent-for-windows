@@ -419,4 +419,36 @@ QPushButton {
 QPushButton:focus {
     outline: none;
 }
+
+QPushButton[role="danger"] {
+    min-height: 36px;
+    background: #c94f63;
+    color: white;
+    border: 1px solid #c94f63;
+    border-radius: 10px;
+    padding: 0 16px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QPushButton[role="danger"]:hover {
+    background: #b84558;
+    border-color: #b84558;
+}
+
+QPushButton[role="primary"] {
+    min-height: 36px;
+    background: #1b6db4;
+    color: white;
+    border: 1px solid #1b6db4;
+    border-radius: 10px;
+    padding: 0 16px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QPushButton[role="primary"]:hover {
+    background: #185f9d;
+    border-color: #185f9d;
+}
 """

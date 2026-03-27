@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from ui.styles import STYLESHEET
+from ui.widgets import show_notice_dialog
 
 
 class CheckStepThread(QThread):
@@ -79,44 +80,7 @@ class FirstRunDialog(QDialog):
         self._start_check()
 
     def _show_notice_dialog(self, title, text, button_text="确定", danger=False):
-        dialog = QDialog(self)
-        dialog.setWindowTitle(title)
-        dialog.setMinimumWidth(340)
-        dialog.setMaximumWidth(440)
-        dialog.setModal(True)
-        dialog.setStyleSheet(STYLESHEET)
-
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(12)
-
-        title_label = QLabel(title)
-        title_label.setProperty("role", "dialog_title")
-        title_label.setWordWrap(True)
-        title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        layout.addWidget(title_label)
-
-        desc_label = QLabel(text)
-        desc_label.setProperty("role", "dialog_desc")
-        desc_label.setWordWrap(True)
-        desc_label.setTextFormat(Qt.TextFormat.PlainText)
-        desc_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        layout.addWidget(desc_label)
-
-        button_row = QHBoxLayout()
-        button_row.addStretch()
-        button = QPushButton(button_text)
-        if danger:
-            button.setStyleSheet(
-                "QPushButton { min-height: 36px; background: #c94f63; color: white; "
-                "border: 1px solid #c94f63; border-radius: 10px; padding: 0 16px; font-size: 13px; font-weight: 600; }"
-                "QPushButton:hover { background: #b84558; border-color: #b84558; }"
-            )
-        button.clicked.connect(dialog.accept)
-        button_row.addWidget(button)
-        layout.addLayout(button_row)
-        dialog.adjustSize()
-        dialog.exec()
+        show_notice_dialog(self, title, text, button_text, danger)
 
     # ------------------------------------------------------------------ #
     #  页面 0：后端选择

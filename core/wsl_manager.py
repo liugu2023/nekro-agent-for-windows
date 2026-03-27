@@ -1024,8 +1024,6 @@ default = root
                     self.boot_finished.emit()
                     self.status_changed.emit("运行中")
                     return
-            except (URLError, OSError):
-                pass
             except Exception:
                 pass
 

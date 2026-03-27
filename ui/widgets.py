@@ -1,6 +1,45 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+
+from ui.styles import STYLESHEET
+
+
+def show_notice_dialog(parent, title, text, button_text="确定", danger=False):
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(title)
+    dialog.setMinimumWidth(340)
+    dialog.setMaximumWidth(440)
+    dialog.setModal(True)
+    dialog.setStyleSheet(STYLESHEET)
+
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(20, 18, 20, 18)
+    layout.setSpacing(12)
+
+    title_label = QLabel(title)
+    title_label.setProperty("role", "dialog_title")
+    title_label.setWordWrap(True)
+    title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    layout.addWidget(title_label)
+
+    desc_label = QLabel(text)
+    desc_label.setProperty("role", "dialog_desc")
+    desc_label.setWordWrap(True)
+    desc_label.setTextFormat(Qt.TextFormat.PlainText)
+    desc_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    layout.addWidget(desc_label)
+
+    button_row = QHBoxLayout()
+    button_row.addStretch()
+    btn = QPushButton(button_text)
+    if danger:
+        btn.setProperty("role", "danger")
+    btn.clicked.connect(dialog.accept)
+    button_row.addWidget(btn)
+    layout.addLayout(button_row)
+    dialog.adjustSize()
+    dialog.exec()
 
 
 class ActionButton(QPushButton):
