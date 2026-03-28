@@ -1185,13 +1185,15 @@ class MainWindow(QMainWindow):
         else:
             QApplication.quit()
 
-    def _show_credentials_dialog(self, info):
+    def _show_credentials_dialog(self, info, wait_for_boot=True):
         dialog = QDialog(self)
         dialog.setWindowTitle("部署凭据信息")
-        dialog.resize(560, 460)
-        dialog.setMinimumSize(520, 420)
+        dialog.resize(560, 500)
+        dialog.setMinimumSize(520, 460)
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
         dialog.setStyleSheet(STYLESHEET)
+        # 禁止点 X 关闭
+        dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
 
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(26, 24, 26, 24)
@@ -1228,6 +1230,11 @@ class MainWindow(QMainWindow):
             napcat_info.setWordWrap(True)
             layout.addWidget(napcat_info)
 
+        # 启动状态行
+        boot_status = QLabel()
+        boot_status.setWordWrap(True)
+        layout.addWidget(boot_status)
+
         button_row = QHBoxLayout()
         button_row.addStretch()
 
@@ -1255,6 +1262,46 @@ class MainWindow(QMainWindow):
         button_row.addWidget(btn_close)
         layout.addLayout(button_row)
 
+        if wait_for_boot:
+            btn_close.setEnabled(False)
+            # spinner 动画
+            _spin_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            _spin = [0]
+            _timer = QTimer(dialog)
+
+            def _tick():
+                boot_status.setText(
+                    f"<span style='color:#58a6ff;'>{_spin_frames[_spin[0] % len(_spin_frames)]} 等待服务启动...</span>"
+                )
+                _spin[0] += 1
+            _timer.timeout.connect(_tick)
+            _timer.start(100)
+            _tick()
+
+            def _on_boot_finished():
+                _timer.stop()
+                boot_status.setText("<span style='color:#3fb950;'>✓ 服务已就绪，可以开始使用</span>")
+                btn_close.setEnabled(True)
+                try:
+                    self.backend.boot_finished.disconnect(_on_boot_finished)
+                except Exception:
+                    pass
+
+            def _on_timeout(status):
+                if status in {"启动超时", "启动失败"}:
+                    _timer.stop()
+                    boot_status.setText(f"<span style='color:#f26f82;'>✗ {status}，请检查日志</span>")
+                    btn_close.setEnabled(True)
+                    try:
+                        self.backend.status_changed.disconnect(_on_timeout)
+                    except Exception:
+                        pass
+
+            self.backend.boot_finished.connect(_on_boot_finished)
+            self.backend.status_changed.connect(_on_timeout)
+        else:
+            boot_status.setVisible(False)
+
         dialog.exec()
 
     def _show_saved_credentials(self):
@@ -1262,4 +1309,4 @@ class MainWindow(QMainWindow):
         if not info:
             self._show_notice_dialog("提示", "尚未部署，暂无凭据信息。\n请先完成部署。")
             return
-        self._show_credentials_dialog(info)
+        self._show_credentials_dialog(info, wait_for_boot=False)
