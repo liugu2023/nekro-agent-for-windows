@@ -184,10 +184,8 @@ class FirstRunDialog(QDialog):
         self.create_hint.setText(f"此目录将存放 {name} 运行时文件，建议预留 10GB 以上空间。")
 
         sample_path = self.backend.get_host_access_path("/root/nekro_agent_data")
-        hint_text = "此目录位于运行环境内部（固定路径，不可修改）。"
-        if sample_path:
-            hint_text += f" Windows 侧访问路径: {sample_path}"
-        self.datadir_hint.setText(hint_text)
+        if hasattr(self, "datadir_path_card"):
+            self.datadir_path_card.setText(sample_path or r"\\wsl$\NekroAgent\root\nekro_agent_data")
 
     def _connect_backend_signals(self):
         self.backend.progress_updated.connect(self._on_progress)
@@ -578,7 +576,7 @@ class FirstRunDialog(QDialog):
             self.stack.setCurrentIndex(3)
         else:
             self.lbl_progress.setStyleSheet("font-size: 13px; color: #cf222e; margin-top: 8px;")
-            self.lbl_progress.setText("环境创建失败，请查看上方错误详情后重试。")
+            self.lbl_progress.setText("环境创建失败，请查看下方错误详情后重试。")
 
     # ------------------------------------------------------------------ #
     #  页面 3：版本选择
@@ -675,28 +673,24 @@ class FirstRunDialog(QDialog):
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
-        lbl_dir = QLabel("数据目录路径:")
-        lbl_dir.setStyleSheet("font-size: 14px; font-weight: 600; color: #24292f; margin-top: 10px;")
-        layout.addWidget(lbl_dir)
+        windows_path = self.backend.get_host_access_path("/root/nekro_agent_data")
+        lbl_winpath = QLabel("Windows 侧访问路径:")
+        lbl_winpath.setStyleSheet("font-size: 14px; font-weight: 600; color: #24292f; margin-top: 10px;")
+        layout.addWidget(lbl_winpath)
 
-        self.datadir_edit = QLineEdit("/root/nekro_agent_data")
-        self.datadir_edit.setStyleSheet(
-            "padding: 8px; border: 1px solid #d0d7de; border-radius: 6px; "
-            "background: #f6f8fa; color: #57606a; font-size: 13px;"
+        self.datadir_path_card = QLabel(windows_path or r"\\wsl$\NekroAgent\root\nekro_agent_data")
+        self.datadir_path_card.setStyleSheet(
+            "font-size: 13px; color: #24292f; background: #f6f8fa; "
+            "border: 1px solid #d0d7de; border-radius: 6px; padding: 10px; margin-top: 2px;"
         )
-        self.datadir_edit.setMinimumWidth(260)
-        self.datadir_edit.setReadOnly(True)
-        layout.addWidget(self.datadir_edit)
+        self.datadir_path_card.setWordWrap(True)
+        self.datadir_path_card.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.datadir_path_card)
 
-        sample_path = self.backend.get_host_access_path("/root/nekro_agent_data")
-        hint_text = "此目录位于运行环境内部（固定路径，不可修改）。"
-        if sample_path:
-            hint_text += f" Windows 侧访问路径: {sample_path}"
-        hint = QLabel(hint_text)
+        hint = QLabel("数据目录固定存储于 WSL 运行环境内部，可通过上方路径在 Windows 文件管理器中直接访问。")
         hint.setStyleSheet("font-size: 12px; color: #8b949e;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
-        self.datadir_hint = hint
 
         # 端口配置
         lbl_ports = QLabel("端口配置:")

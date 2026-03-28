@@ -213,8 +213,8 @@ class WSLManager(BackendBase):
                     self.log_received.emit("[环境检测] ✓ Docker 可用", "info")
                 else:
                     self.log_received.emit("[环境检测] ✗ Docker 检测失败", "error")
-                    self.log_received.emit(f"返回码: {proc.returncode}", "debug")
-                    self.log_received.emit(f"STDERR: {self._clean_stderr(proc.stderr, 300)}", "debug")
+                    self.log_received.emit(f"返回码: {proc.returncode}", "error")
+                    self.log_received.emit(f"STDERR: {self._clean_stderr(proc.stderr, 300)}", "error")
                 return (ok, "")
             except Exception as e:
                 self.log_received.emit(f"[环境检测] ✗ Docker 检测异常: {e}", "error")
@@ -330,7 +330,13 @@ class WSLManager(BackendBase):
         """判断是否为 WSL 系统噪音（如 hostname 解析警告的 UTF-16 乱码）"""
         # strip null bytes / BOM that may survive decoding
         stripped = text.strip().lstrip('\ufeff\x00')
-        if stripped.startswith("wsl:"):
+        # 去掉残留 null 字节后再判断
+        stripped_clean = stripped.replace('\x00', '')
+        if stripped_clean.startswith("wsl:"):
+            return True
+        # 原文含大量 null 字节说明是 UTF-16 解码残留，直接过滤
+        null_ratio = text.count('\x00') / len(text) if text else 0
+        if null_ratio > 0.2:
             return True
         # known WSL warning substrings
         _WSL_NOISE_PATTERNS = (
@@ -340,7 +346,7 @@ class WSLManager(BackendBase):
             "NAT mode",
             "未镜像到 WSL",
         )
-        lower = stripped.lower()
+        lower = stripped_clean.lower()
         if any(p.lower() in lower for p in _WSL_NOISE_PATTERNS):
             return True
         # 非 ASCII 字符占比超过 30% 则认为是乱码
@@ -401,10 +407,12 @@ class WSLManager(BackendBase):
                 creationflags=self._creation_flags(),
             )
             if proc.returncode != 0:
-                self.progress_updated.emit(f"导入失败")
+                stderr_text = self._clean_stderr(proc.stderr, 300)
+                self.progress_updated.emit("导入失败")
                 self.log_received.emit("[发行版创建] ✗ WSL 导入失败", "error")
-                self.log_received.emit(f"返回码: {proc.returncode}", "debug")
-                self.log_received.emit(f"STDERR: {self._clean_stderr(proc.stderr, 300)}", "debug")
+                self.log_received.emit(f"返回码: {proc.returncode}", "error")
+                self.log_received.emit(f"STDERR: {stderr_text}", "error")
+                self.install_error.emit(f"WSL 导入失败（返回码 {proc.returncode}）：{stderr_text}")
                 return False
             self.log_received.emit(f"[发行版创建] ✓ {DISTRO_NAME} 发行版导入完成", "info")
         except subprocess.TimeoutExpired:
@@ -803,11 +811,11 @@ default = root
 
                 if proc.returncode != 0:
                     # 详细输出错误信息
-                    self.log_received.emit(f"返回码: {proc.returncode}", "debug")
-                    self.log_received.emit(f"部署目录: {deploy_dir}", "debug")
-                    self.log_received.emit(f"STDOUT:\n{self._clean_stderr(proc.stdout, 0)}", "debug")
-                    self.log_received.emit(f"STDERR:\n{self._clean_stderr(proc.stderr, 0)}", "debug")
-                    self.log_received.emit("Compose 启动失败，详见上方 DEBUG 日志", "error")
+                    self.log_received.emit(f"返回码: {proc.returncode}", "error")
+                    self.log_received.emit(f"部署目录: {deploy_dir}", "error")
+                    self.log_received.emit(f"STDOUT:\n{self._clean_stderr(proc.stdout, 0)}", "error")
+                    self.log_received.emit(f"STDERR:\n{self._clean_stderr(proc.stderr, 0)}", "error")
+                    self.log_received.emit("Compose 启动失败，详见上方日志", "error")
                     self.status_changed.emit("启动失败")
                     return
 

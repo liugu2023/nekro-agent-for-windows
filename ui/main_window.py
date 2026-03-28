@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -59,13 +60,7 @@ class MainWindow(QMainWindow):
         self._last_status = ""
         self._uninstall_in_progress = False
         self._pull_layers = OrderedDict()
-        self._pull_layer_order = []  # 保持 docker pull 输出的原始顺序
-        self._pull_events = []
-        self._pull_header = ""
-        self._pull_spinner_idx = 0
-        self._pull_spinner_timer = QTimer(self)
-        self._pull_spinner_timer.timeout.connect(self._tick_pull_spinner)
-        self._pull_active = False
+        self._pull_layer_order = []
         self.browser_urls = {
             "nekro": f"http://localhost:{self.config.get('nekro_port') or 8021}",
             "napcat": f"http://localhost:{self.config.get('napcat_port') or 6099}",
@@ -358,113 +353,26 @@ class MainWindow(QMainWindow):
         for current, button in enumerate(buttons):
             button.setChecked(current == index)
 
+    def _tick_pull_spinner(self):
+        self._pull_spinner_idx = (self._pull_spinner_idx + 1) % len(self._pull_spinner_frames)
+        if hasattr(self, "pull_spinner_label"):
+            self.pull_spinner_label.setText(self._pull_spinner_frames[self._pull_spinner_idx])
+
     def _set_pull_view_visible(self, visible):
         if hasattr(self, "pull_view_frame"):
             self.pull_view_frame.setVisible(visible)
-
-    # layer 状态对应颜色
-    _SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-    _LAYER_STATUS_COLOR = {
-        "Waiting":           "#57606a",
-        "Pulling fs layer":  "#57606a",
-        "Downloading":       "#58a6ff",
-        "Verifying":         "#d2a679",
-        "Extracting":        "#e3b341",
-        "Download complete": "#3fb950",
-        "Pull complete":     "#3fb950",
-        "Already exists":   "#8b949e",
-    }
-
-    _LAYER_STATUS_ICON = {
-        "Waiting":           "○",
-        "Pulling fs layer":  "○",
-        "Downloading":       "↓",
-        "Verifying":         "~",
-        "Extracting":        "⚡",
-        "Download complete": "✓",
-        "Pull complete":     "✓",
-        "Already exists":    "✓",
-    }
-
-    def _layer_color(self, status):
-        for key, color in self._LAYER_STATUS_COLOR.items():
-            if status.startswith(key):
-                return color
-        return "#cccccc"
-
-    def _layer_icon(self, status):
-        for key, icon in self._LAYER_STATUS_ICON.items():
-            if status.startswith(key):
-                return icon
-        return "·"
-
-    def _layer_progress(self, status):
-        """从 Downloading 状态行提取进度百分比字符串，如 '34%'"""
-        m = re.search(r'(\d+\.?\d*)\s*MB/(\d+\.?\d*)\s*MB', status)
-        if m:
-            done, total = float(m.group(1)), float(m.group(2))
-            if total > 0:
-                pct = int(done * 100 / total)
-                return f"{pct}%"
-        m = re.search(r'(\d+)%', status)
-        if m:
-            return f"{m.group(1)}%"
-        return ""
-
-    def _tick_pull_spinner(self):
-        self._pull_spinner_idx = (self._pull_spinner_idx + 1) % len(self._SPINNER_FRAMES)
-        self._render_pull_view()
-
-    def _render_pull_view(self):
-        if not hasattr(self, "pull_viewer"):
-            return
-
-        spinner = self._SPINNER_FRAMES[self._pull_spinner_idx] if self._pull_active else ""
-
-        parts = []
-        if self._pull_header:
-            header_html = f"<b style='color:#58a6ff;'>{spinner + ' ' if spinner else ''}{self._pull_header}</b><br>"
-            parts.append(header_html)
-
-        if self._pull_layer_order:
-            parts.append("<br>")
-            for layer_id in self._pull_layer_order:
-                status = self._pull_layers.get(layer_id, "")
-                color = self._layer_color(status)
-                icon = self._layer_icon(status)
-                # 只保留状态关键词，去掉 ASCII 进度条和多余空格
-                clean_status = re.split(r'\[', status)[0].strip()
-                progress = self._layer_progress(status)
-                progress_html = f" <span style='color:#8b949e;'>({progress})</span>" if progress else ""
-                parts.append(
-                    f"<span style='color:#8b949e;'>{layer_id}</span>"
-                    f"<span style='color:#444;'>&nbsp;&nbsp;</span>"
-                    f"<span style='color:{color};'>{icon} {clean_status}</span>"
-                    f"{progress_html}<br>"
-                )
-
-        if self._pull_events:
-            if self._pull_layer_order:
-                parts.append("<hr style='border:none;border-top:1px solid #1e3a52;margin:6px 0;'>")
-            for event in self._pull_events[-6:]:
-                color = "#3fb950" if event.startswith("✓") else ("#f26f82" if event.startswith("✗") else "#8b949e")
-                parts.append(f"<span style='color:{color};'>{event}</span><br>")
-
-        self.pull_viewer.setHtml(
-            "<div style='font-family: Segoe UI, Microsoft YaHei UI, sans-serif; "
-            "font-size: 13px; line-height: 1.8;'>" + "".join(parts) + "</div>"
-        )
-        self.pull_viewer.verticalScrollBar().setValue(self.pull_viewer.verticalScrollBar().maximum())
+        if hasattr(self, "_pull_spinner_timer"):
+            if visible:
+                self._pull_spinner_timer.start(80)
+            else:
+                self._pull_spinner_timer.stop()
+                if hasattr(self, "pull_spinner_label"):
+                    self.pull_spinner_label.setText("⠋")
 
     def _update_pull_view(self, header="", detail=""):
-        if not hasattr(self, "pull_viewer"):
-            return
         if header:
-            self._pull_header = header
             self.pull_status_label.setText(header)
         if detail:
-            # 匹配 docker pull 的 layer 行: "abc123ef: Downloading [==>   ] 12.3MB/45.6MB"
             layer_match = re.match(r"^([a-f0-9]{6,64}):\s*(.+)$", detail, re.IGNORECASE)
             if layer_match:
                 layer_id, status = layer_match.groups()
@@ -472,26 +380,21 @@ class MainWindow(QMainWindow):
                 if short_id not in self._pull_layers:
                     self._pull_layer_order.append(short_id)
                 self._pull_layers[short_id] = status
-            else:
-                self._pull_events.append(detail)
-                self._pull_events = self._pull_events[-12:]
+                # 更新进度条
+                total = len(self._pull_layer_order)
+                done = sum(
+                    1 for lid in self._pull_layer_order
+                    if self._pull_layers.get(lid, "").startswith(("Pull complete", "Already exists", "Download complete"))
+                )
+                if total > 0:
+                    self.pull_overall_bar.setValue(int(done * 100 / total))
         self._set_pull_view_visible(True)
-        if not self._pull_spinner_timer.isActive():
-            self._pull_active = True
-            self._pull_spinner_timer.start(100)
-        self._render_pull_view()
 
     def _clear_pull_progress(self):
-        if not hasattr(self, "pull_viewer"):
-            return
-        self._pull_active = False
-        self._pull_spinner_timer.stop()
         self._pull_layers.clear()
         self._pull_layer_order.clear()
-        self._pull_events.clear()
-        self._pull_header = ""
         self.pull_status_label.setText("")
-        self.pull_viewer.clear()
+        self.pull_overall_bar.setValue(0)
         self._set_pull_view_visible(False)
 
     def _on_backend_progress(self, text):
@@ -503,23 +406,16 @@ class MainWindow(QMainWindow):
             elif phase == "update":
                 self._update_pull_view(detail=message)
             elif phase == "stage":
-                # 切换到下一个镜像阶段，清理旧 layer 状态
                 self._pull_layers.clear()
+                self._pull_layer_order.clear()
+                self.pull_overall_bar.setValue(0)
                 self._update_pull_view(header=message)
             elif phase == "done":
-                self._pull_events.append("")
-                self._pull_events.append(f"✓ {message}")
+                self.pull_overall_bar.setValue(100)
                 self._update_pull_view(header=message)
                 QTimer.singleShot(2000, self._clear_pull_progress)
             elif phase == "error":
-                self._pull_events.append(f"✗ {message}")
                 self._update_pull_view(header=message)
-            return
-
-        if text in {"启动 Compose 服务...", "拉取 Docker 镜像..."}:
-            # 普通阶段提示，只更新状态标签，不显示 pull 终端框
-            if hasattr(self, "pull_status_label"):
-                self.pull_status_label.setText(text)
             return
         if text in {"__docker_done__", "__docker_fail__"}:
             self._clear_pull_progress()
@@ -636,14 +532,6 @@ class MainWindow(QMainWindow):
         if running:
             self.btn_primary_deploy.setText("服务运行中")
             if hasattr(self, "_is_first_deploy") and self._is_first_deploy:
-                deploy_mode = self.config.get("deploy_mode")
-                nekro_port = self.config.get("nekro_port") or 8021
-                napcat_port = self.config.get("napcat_port") or 6099
-                message = "服务已启动。\n\n建议收藏以下地址：\n\n"
-                message += f"Nekro Agent: http://localhost:{nekro_port}"
-                if deploy_mode == "napcat":
-                    message += f"\nNapCat: http://localhost:{napcat_port}"
-                self._show_notice_dialog("服务已启动", message)
                 self._is_first_deploy = False
             if hasattr(self, "webview") and not was_running:
                 self.switch_tab(1)
@@ -870,16 +758,30 @@ class MainWindow(QMainWindow):
         self.pull_status_label.setWordWrap(True)
         pull_view_layout.addWidget(self.pull_status_label)
 
-        self.pull_viewer = QTextEdit()
-        self.pull_viewer.setObjectName("LogViewer")
-        self.pull_viewer.setReadOnly(True)
-        self.pull_viewer.setMinimumHeight(200)
-        self.pull_viewer.setStyleSheet(
-            "QTextEdit { font-family: 'Segoe UI', 'Microsoft YaHei UI', sans-serif; "
-            "font-size: 13px; background: #0f2032; color: #dfeaf6; "
-            "border: 1px solid #20384f; border-radius: 8px; padding: 14px; }"
+        bar_row = QHBoxLayout()
+        bar_row.setSpacing(10)
+
+        self.pull_spinner_label = QLabel("⠋")
+        self.pull_spinner_label.setStyleSheet("font-size: 16px; color: #58a6ff;")
+        self.pull_spinner_label.setFixedWidth(20)
+        bar_row.addWidget(self.pull_spinner_label)
+
+        self.pull_overall_bar = QProgressBar()
+        self.pull_overall_bar.setRange(0, 100)
+        self.pull_overall_bar.setValue(0)
+        self.pull_overall_bar.setFixedHeight(8)
+        self.pull_overall_bar.setTextVisible(False)
+        self.pull_overall_bar.setStyleSheet(
+            "QProgressBar { border: none; background: #1e3a52; border-radius: 4px; }"
+            "QProgressBar::chunk { background: #58a6ff; border-radius: 4px; }"
         )
-        pull_view_layout.addWidget(self.pull_viewer)
+        bar_row.addWidget(self.pull_overall_bar)
+        pull_view_layout.addLayout(bar_row)
+
+        self._pull_spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self._pull_spinner_idx = 0
+        self._pull_spinner_timer = QTimer(self)
+        self._pull_spinner_timer.timeout.connect(self._tick_pull_spinner)
 
         self.pull_view_frame.setVisible(False)
         card_layout.addWidget(self.pull_view_frame)
