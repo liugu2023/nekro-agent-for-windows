@@ -148,9 +148,10 @@ class MainWindow(QMainWindow):
 
         sidebar_layout.addStretch()
 
-        footnote = QLabel("为 Nekro Agent 提供本地部署与运行入口")
+        footnote = QLabel('<a href="https://github.com/KroMiose/nekro-agent" style="color:#8b949e;text-decoration:none;">KroMiose/nekro-agent</a>')
         footnote.setObjectName("SidebarFootnote")
         footnote.setWordWrap(True)
+        footnote.setOpenExternalLinks(True)
         sidebar_layout.addWidget(footnote)
 
         root_layout.addWidget(self.sidebar)
