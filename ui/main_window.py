@@ -203,7 +203,7 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle(title)
         dialog.setMinimumWidth(360)
         dialog.setMaximumWidth(460)
-        dialog.setModal(True)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
         dialog.setStyleSheet(STYLESHEET)
 
         layout = QVBoxLayout(dialog)
@@ -1141,7 +1141,7 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("部署凭据信息")
         dialog.resize(560, 460)
         dialog.setMinimumSize(520, 420)
-        dialog.setModal(True)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
         dialog.setStyleSheet(STYLESHEET)
 
         layout = QVBoxLayout(dialog)

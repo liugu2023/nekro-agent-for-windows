@@ -10,7 +10,7 @@ def show_notice_dialog(parent, title, text, button_text="确定", danger=False):
     dialog.setWindowTitle(title)
     dialog.setMinimumWidth(340)
     dialog.setMaximumWidth(440)
-    dialog.setModal(True)
+    dialog.setWindowModality(Qt.WindowModality.WindowModal)
     dialog.setStyleSheet(STYLESHEET)
 
     layout = QVBoxLayout(dialog)

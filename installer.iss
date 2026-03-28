@@ -2,7 +2,7 @@
 ; Nekro-Agent 稳定安装脚本（工业级）
 ; =========================
 
-#define MyAppName "Nekro-Agent"
+#define MyAppName "Nekro Agent"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Nekro-Agent Team"
 #define MyAppExeName "NekroAgent.exe"
