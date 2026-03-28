@@ -709,7 +709,7 @@ class MainWindow(QMainWindow):
         self.btn_primary_deploy = QPushButton("开始部署")
         self.btn_primary_deploy.setObjectName("HeroPrimary")
         self.btn_primary_deploy.clicked.connect(self.start_deploy)
-        self.btn_primary_update = QPushButton("更新运行环境")
+        self.btn_primary_update = QPushButton("升级 Nekro Agent")
         self.btn_primary_update.setObjectName("HeroSecondary")
         self.btn_primary_update.clicked.connect(self._update_services)
         self.btn_primary_creds = QPushButton("查看部署凭据")
@@ -754,7 +754,7 @@ class MainWindow(QMainWindow):
 
         self.btn_env_check = ActionButton("CHK", "环境检查", f"重新运行 {self.backend.display_name} 初始化向导")
         self.btn_deploy_action = ActionButton("RUN", "一键部署", "启动容器并写入运行配置", "primary")
-        self.btn_update_action = ActionButton("UPD", "检查更新", "拉取镜像并重启服务")
+        self.btn_update_action = ActionButton("UPD", "升级 Nekro Agent", "拉取镜像并重启服务")
         self.btn_uninstall_action = ActionButton("DEL", "卸载清理", "删除容器、镜像和运行环境", "danger")
 
         self.btn_env_check.clicked.connect(self._show_first_run_dialog)
